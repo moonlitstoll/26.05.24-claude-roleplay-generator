@@ -839,8 +839,13 @@ export default function Home() {
       });
 
       if (!scriptRes.ok) {
-        const errData = await scriptRes.json();
-        throw new Error(errData.details || 'Failed to generate script');
+        let errData;
+        try {
+          errData = await scriptRes.json();
+        } catch (e) {
+          throw new Error(`Server Gateway Timeout ${scriptRes.status} (${scriptRes.statusText}). The request may have taken too long.`);
+        }
+        throw new Error(errData?.details || errData?.error || 'Failed to generate script');
       }
 
       const data = await scriptRes.json();
