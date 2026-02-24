@@ -179,7 +179,8 @@ export default function Home() {
 
   // Effect: Auto-trigger merge when generation finishes
   useEffect(() => {
-    if (!loading && !audioLoading && generatedSets.length > 0 && Object.keys(audioUrls).length > 0) {
+    const hasAudio = Object.keys(audioUrls).length > 0 || Object.keys(audioUrlsSouth).length > 0;
+    if (!loading && !audioLoading && generatedSets.length > 0 && hasAudio) {
       const activeUrls = (language === 'Vietnamese' && vietnameseAccent === 'south') ? audioUrlsSouth : audioUrls;
       if (Object.keys(activeUrls).length === totalSentences && totalSentences > 0) {
         mergeAudio(activeUrls);
@@ -845,14 +846,18 @@ export default function Home() {
       // Start Parallel Generation
       setProgress('Generating Audio...');
 
-      // 1. South Audio (If VN)
       if (language === 'Vietnamese') {
-        // Pass the setter directly
-        generateAudioForSegments(allSegmentData, 'south', setAudioUrlsSouth);
+        if (vietnameseAccent === 'south') {
+          // Only South
+          await generateAudioForSegments(allSegmentData, 'south', setAudioUrlsSouth);
+        } else {
+          // Only North (Standard)
+          await generateAudioForSegments(allSegmentData, 'north', setAudioUrls);
+        }
+      } else {
+        // English (Standard)
+        await generateAudioForSegments(allSegmentData, 'north', setAudioUrls);
       }
-
-      // 2. Standard Audio
-      await generateAudioForSegments(allSegmentData, 'north', setAudioUrls);
 
       setAudioLoading(false);
       setProgress('');
@@ -878,7 +883,8 @@ export default function Home() {
 
   // Effect to auto-save when generation finishes and we have data
   useEffect(() => {
-    if (!loading && !audioLoading && generatedSets.length > 0 && Object.keys(audioUrls).length > 0) {
+    const hasAudio = Object.keys(audioUrls).length > 0 || Object.keys(audioUrlsSouth).length > 0;
+    if (!loading && !audioLoading && generatedSets.length > 0 && hasAudio) {
       const autoSave = async () => {
         // Avoid saving duplicates? We check if ID exists? storage.ts put overwrites.
         // We need to convert URLs to Blobs.
