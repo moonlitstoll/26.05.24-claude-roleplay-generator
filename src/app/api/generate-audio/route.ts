@@ -131,27 +131,18 @@ export async function POST(req: NextRequest) {
             return { buffer: Buffer.alloc(0), duration: 0 };
         };
 
-        // Run in batches of 5 (Though page.tsx calls with 1 usually)
+        // Run in batches of 5 (Process all requested segments)
         const results = await processInBatches(segments, 5, processItem);
 
-        // Merge
-        const allBuffers = results.map(r => r.buffer);
-        const mergedBuffer = Buffer.concat(allBuffers);
-        const mergedBase64 = mergedBuffer.toString('base64');
-
-        // Basic offsets (duration will be 0 for TTS segments, but client logic ignores this
-        // as strictly segment-based fetching is now used in page.tsx)
-        const offsets: number[] = [];
-        let currentOffset = 0;
-        results.forEach(r => {
-            offsets.push(currentOffset);
-            currentOffset += r.duration;
-        });
+        // Return individual segments for client-side mapping
+        const responseSegments = results.map((r, i) => ({
+            idx: segments[i].idx,
+            audioContent: r.buffer.toString('base64'),
+            duration: r.duration
+        }));
 
         return NextResponse.json({
-            audioContent: mergedBase64,
-            offsets: offsets,
-            totalDuration: currentOffset
+            segments: responseSegments
         });
 
     } catch (error: any) {

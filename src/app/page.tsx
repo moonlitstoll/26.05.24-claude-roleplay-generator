@@ -726,51 +726,46 @@ export default function Home() {
   // FETCHERS (Batched)
   // Fix: accept React state setter signature
   const generateAudioForSegments = async (segments: any[], mode: 'north' | 'south', updateMap: React.Dispatch<React.SetStateAction<AudioMap>>) => {
-    // We process in small batches of 3 to avoid flooding connection but keep speed
-    const BATCH_SIZE = 3;
-    for (let i = 0; i < segments.length; i += BATCH_SIZE) {
-      const batch = segments.slice(i, i + BATCH_SIZE);
-      const promises = batch.map(async (seg) => {
-        try {
-          // Only fetch if meaningful
-          if (!seg.text && !seg.pause) return null;
+    if (segments.length === 0) return;
+    setProgress(`Generating Audio (${mode})...`);
 
-          const res = await fetch('/api/generate-audio', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              segments: [seg], // Single segment array
-              speakers: seg.speakers,
-              language,
-              accentMode: mode === 'south' ? 'south' : (language === 'Vietnamese' ? 'all-standard' : accentMode)
-            })
-          });
-          if (!res.ok) throw new Error('Fetch failed');
-          const data = await res.json();
-          const blob = await (await fetch(`data:audio/mpeg;base64,${data.audioContent}`)).blob();
-          return {
-            idx: seg.idx,
-            url: URL.createObjectURL(blob)
-          };
-        } catch (e) {
-          console.error(`Audio fail ${seg.idx}`, e);
-          return null;
-        }
+    try {
+      const res = await fetch('/api/generate-audio', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          segments,
+          speakers: segments[0]?.speakers,
+          language: languageRef.current,
+          accentMode: mode === 'south' ? 'south' : (languageRef.current === 'Vietnamese' ? 'all-standard' : accentMode)
+        })
       });
 
-      const results = await Promise.all(promises);
+      if (!res.ok) throw new Error(`Batch TTS failed: ${res.statusText}`);
 
-      // Update state incrementally
+      const data = await res.json();
+      const results = data.segments || [];
+
+      // Update state once with all results
       updateMap((prev) => {
         const next = { ...prev };
-        results.forEach(r => {
-          if (r) next[r.idx] = r.url;
+        results.forEach((r: any) => {
+          if (r.audioContent) {
+            // Convert Base64 back to Blob and then to URL
+            const binary = atob(r.audioContent);
+            const array = new Uint8Array(binary.length);
+            for (let i = 0; i < binary.length; i++) array[i] = binary.charCodeAt(i);
+            const blob = new Blob([array], { type: 'audio/mpeg' });
+            next[r.idx] = URL.createObjectURL(blob);
+          }
         });
         return next;
       });
 
-      // Update progress UI
-      setProgress(`Audio (${Math.min(i + BATCH_SIZE, segments.length)}/${segments.length})...`);
+      setProgress('');
+    } catch (e) {
+      console.error(`Batch Audio Generation Error (${mode}):`, e);
+      setError(`Failed to generate audio for ${mode} accent.`);
     }
   };
 
