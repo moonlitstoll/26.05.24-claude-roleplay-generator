@@ -135,7 +135,30 @@ export default function Home() {
     if (audioRefB.current) audioRefB.current.playbackRate = playbackSpeed;
   }, [playbackSpeed, isPlaying]);
 
+  // Prevent Ghost Audio & Memory Leaks
+  const cleanupAudio = React.useCallback(() => {
+    setIsPlaying(false);
+    audioRefA.current?.pause();
+    audioRefB.current?.pause();
+    mergedAudioRef.current?.pause();
 
+    Object.values(audioUrlsRef.current).forEach(url => URL.revokeObjectURL(url));
+    Object.values(audioUrlsSouthRef.current).forEach(url => URL.revokeObjectURL(url));
+
+    if (mergedAudioRef.current?.src && mergedAudioRef.current.src.startsWith('blob:')) {
+      URL.revokeObjectURL(mergedAudioRef.current.src);
+    }
+
+    setAudioUrls({});
+    setAudioUrlsSouth({});
+    setMergedAudioUrl(null);
+    setIsMergedMode(false);
+  }, []);
+
+  // Ensure cleanup on unmount as well
+  useEffect(() => {
+    return () => cleanupAudio();
+  }, [cleanupAudio]);
 
   // Helper: Merge Audio
   const mergeAudio = async (urls: AudioMap) => {
@@ -777,9 +800,11 @@ export default function Home() {
     setLoading(true);
     setAudioLoading(true);
     setProgress('Initializing...');
+
+    // Clean up previous audio resources before starting new generation
+    cleanupAudio();
+
     setGeneratedSets([]);
-    setAudioUrls({});
-    setAudioUrlsSouth({});
     setCurrentSentenceIndex(-1);
     setError(null);
     isGeneratingRef.current = true; // Mark as user-initiated generation
@@ -925,6 +950,9 @@ export default function Home() {
     setLanguage(session.language as any);
     setInput(session.input || '');
     setVietnameseAccent(session.lastAccent || 'north');
+
+    // Clean up current audio resources before loading new ones
+    cleanupAudio();
 
     // Restore Audio
     if (session.audioMap) {
