@@ -132,9 +132,14 @@ export async function POST(req: NextRequest) {
           SCENARIO: "${promptInput}"
           
           CRITICAL INSTRUCTION - MAX DIVERSITY & NATIVE REALISM:
-          - **Dynamic Persona**: Randomly assign distinct, contrasting, or even extreme personalities/moods to Speakers A and B (e.g., sarcastic vs. naive, aggressive vs. defensive, overly excited vs. deadpan). Let their personality dictate the vocabulary and tone.
+          - **Dynamic Persona**: Randomly assign highly diverse and distinct personalities/moods to Speakers A and B. DO NOT always make them argue. Mix it up with various relationship dynamics:
+            * **Friendly/Positive** (e.g., best friends hyping each other up, supportive colleagues, excited fans)
+            * **Awkward/Funny** (e.g., oversharer vs. someone trying to escape, overly polite strangers)
+            * **Contrasting/Tense** (e.g., sarcastic vs. naive, aggressive vs. defensive, overly excited vs. deadpan)
+            * **Casual/Gossip** (e.g., spilling the tea, whispering rumors)
+            Let their personality dictate the vocabulary, slang, and tone.
           - **Native-Level Polish**: Use raw, real-world native expressions. Avoid textbook grammar if a native speaker would use a slang, idiom, or filler word (uh, like, you know, etc.).
-          - **Topic Fidelity & Twist**: Stay on topic but don't be afraid to add a small realistic twist or conflict to make it more engaging.
+          - **Scenario Flow**: Stay on topic. Ensure the conversation flow matches the assigned relationship (e.g., friendly banter, awkward small talk, exciting gossip, or a realistic conflict). Add a small twist if it makes the dialogue more engaging.
           
           GENDER ASSIGNMENT:
           - Assign logical genders to Speakers A and B based on the scenario/personas.
