@@ -108,9 +108,10 @@ export async function POST(req: NextRequest) {
       baseInstruction = `
           VERBATIM ANALYSIS MODE ACTIVATED:
           - DO NOT generate a roleplay or conversation.
-          - DO NOT change or "fix" the input text. Use the user's "Input" EXACTLY as it is.
+          - IF the user's "Input" is already in the target language (${language}), use it EXACTLY as it is for the 'text' field.
+          - IF the user's "Input" is in Korean, you MUST FIRST translate the Korean input into a natural and highly authentic ${language} sentence. Use this translated ${language} sentence as the 'text' field, and the original Korean input as the 'translation' field.
           - SEGMENTATION STRATEGY:
-            1. Split the input text into INDIVIDUAL sentences for granular analysis.
+            1. Split the ${language} text into INDIVIDUAL sentences for granular analysis.
           - Assign all segments to Speaker "A".
           - Provide ALL descriptions, including translations and word analysis, in Korean ONLY.
           - Provide 초정밀 분석 (Deep Scan) for each segment according to the rules and examples.
