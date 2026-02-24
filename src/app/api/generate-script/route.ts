@@ -93,7 +93,7 @@ export async function POST(req: NextRequest) {
     // ------------------------------------------------------------------
     // Only used when input is empty. Instructs the AI to generate its own unique scenario.
     const dynamicTopicInstruction = isInputEmpty
-      ? "Generate a completely random, creative, and highly specific native-level scenario or conflict. Avoid cliches like ordering food or asking for directions. Think of intense, funny, or awkward real-life situations (e.g., a misunderstanding about a secret, a negotiation over a strange item, an unexpected encounter in a weird place)."
+      ? "Generate a random common day-to-day scenario or a creative conflict. It is perfectly fine to use textbook topics (like ordering food, asking for directions, returning an item), BUT the dialogue MUST focus heavily on highly authentic, real-world native conversational expressions, slang, and natural flow."
       : input;
 
     const promptInput = dynamicTopicInstruction;
@@ -132,14 +132,9 @@ export async function POST(req: NextRequest) {
           SCENARIO: "${promptInput}"
           
           CRITICAL INSTRUCTION - MAX DIVERSITY & NATIVE REALISM:
-          - **Dynamic Persona**: Randomly assign highly diverse and distinct personalities/moods to Speakers A and B. DO NOT always make them argue. Mix it up with various relationship dynamics:
-            * **Friendly/Positive** (e.g., best friends hyping each other up, supportive colleagues, excited fans)
-            * **Awkward/Funny** (e.g., oversharer vs. someone trying to escape, overly polite strangers)
-            * **Contrasting/Tense** (e.g., sarcastic vs. naive, aggressive vs. defensive, overly excited vs. deadpan)
-            * **Casual/Gossip** (e.g., spilling the tea, whispering rumors)
-            Let their personality dictate the vocabulary, slang, and tone.
-          - **Native-Level Polish**: Use raw, real-world native expressions. Avoid textbook grammar if a native speaker would use a slang, idiom, or filler word (uh, like, you know, etc.).
-          - **Scenario Flow**: Stay on topic. Ensure the conversation flow matches the assigned relationship (e.g., friendly banter, awkward small talk, exciting gossip, or a realistic conflict). Add a small twist if it makes the dialogue more engaging.
+          - **Infinite Persona & Relationship Dynamics**: DO NOT limit personalities to just 'angry' or 'friendly' or 4 strict categories. Create an incredibly diverse spectrum of human relationships (e.g., a weary retail worker vs. an overly chatty customer, siblings teasing each other, roommates passively arguing over chores, polite but passive-aggressive neighbors, two gym bros spotting each other, or a tech-savvy grandkid helping a confused grandparent). The permutations should be endless. Let their distinct personalities and relationship dictate their vocabulary, tone, slang, and filler words.
+          - **Native-Level Polish**: Use raw, real-world native expressions. Even for basic textbook topics, you MUST inject native flare, idioms, filler words (uh, like, you know, etc.), and natural speech patterns. Make it sound like a real conversation overheard on the street.
+          - **Scenario Flow**: Maintain a highly authentic conversational flow appropriate for the dynamic. 
           
           GENDER ASSIGNMENT:
           - Assign logical genders to Speakers A and B based on the scenario/personas.
