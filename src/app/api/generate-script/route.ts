@@ -79,6 +79,7 @@ export async function POST(req: NextRequest) {
       generationConfig: {
         responseMimeType: "application/json",
         responseSchema: schema,
+        temperature: 1.2, // High creativity for diverse native expressions
       },
     });
 
@@ -87,60 +88,15 @@ export async function POST(req: NextRequest) {
     // ------------------------------------------------------------------
     // DIVERSE TOPIC GENERATION (Native Contexts)
     // ------------------------------------------------------------------
-    const getRandomTopic = () => {
-      const topics = [
-        // daily life
-        "Returning a defective item at a store. Real native expressions for complaints.",
-        "Complaining about noise to a neighbor politely but firmly.",
-        "Asking for a refund for a late delivery from customer service.",
-        "Negotiating rent with a landlord using logical arguments.",
-        "Calling a plumber for a leak and describing the situation precisely.",
-        "Explaining a complex coffee order with many customizations.",
-        "Asking for a different table at a restaurant because of a draft.",
-        "Finding a lost item at a hotel front desk.",
-        "Asking for directions in a complex subway station to a specific exit.",
-        "Recovering a towed car from the impound lot.",
+    // ------------------------------------------------------------------
+    // DIVERSE TOPIC GENERATION (Dynamic Native Contexts)
+    // ------------------------------------------------------------------
+    // Only used when input is empty. Instructs the AI to generate its own unique scenario.
+    const dynamicTopicInstruction = isInputEmpty
+      ? "Generate a completely random, creative, and highly specific native-level scenario or conflict. Avoid cliches like ordering food or asking for directions. Think of intense, funny, or awkward real-life situations (e.g., a misunderstanding about a secret, a negotiation over a strange item, an unexpected encounter in a weird place)."
+      : input;
 
-        // work / professional
-        "Negotiating a salary increase during an annual review.",
-        "Explaining a mistake to a boss without making excuses.",
-        "Leading a project meeting kickoff and setting expectations.",
-        "Giving constructive feedback to a colleague about their performance.",
-        "Asking for time off for a family emergency.",
-        "Pitching a new idea to a skeptical client using data.",
-        "Handling an angry customer on the phone professionally.",
-        "Networking at a professional conference and starting conversations.",
-        "Quitting a job respectfully and discussing the transition.",
-        "Explaining a gap in a resume during a job interview.",
-
-        // relationships / emotional
-        "Confessing feelings to a crush in a natural way.",
-        "Breaking up with someone gently and clearly.",
-        "Apologizing to a friend for forgetting a major event.",
-        "Setting boundaries with a pushy friend or family member.",
-        "Comforting a friend who is going through a hard time.",
-        "Discussing future plans and goals with a partner.",
-        "Confronting a partner about spending habits calmly.",
-        "Asking a friend to pay back money they borrowed.",
-        "Declining an invitation without sounding rude.",
-        "Reconnecting with an old friend after a long time.",
-
-        // travel / emergencies
-        "Reporting a theft to the local police in a foreign country.",
-        "Explaining symptoms to a doctor or pharmacist.",
-        "Missing a connecting flight and negotiating a voucher.",
-        "Dealing with a lost passport at the embassy.",
-        "Trying to check in early at a hotel when exhausted.",
-        "Asking locals for hidden gem recommendations (not touristy).",
-        "Renting a car and understanding the insurance terms.",
-        "Disputing a taxi fare that seems too high.",
-        "Buying specific medicine at a pharmacy for an allergy.",
-        "Ordering street food with specific dietary needs (allergy/vegan)."
-      ];
-      return topics[Math.floor(Math.random() * topics.length)];
-    };
-
-    const promptInput = isInputEmpty ? getRandomTopic() : input;
+    const promptInput = dynamicTopicInstruction;
 
 
     const isAnalysisMode = count === 0 && mode === 'analysis';
@@ -175,13 +131,13 @@ export async function POST(req: NextRequest) {
           Generate exactly ${count * 2} lines of conversation (alternating between speaker A and B).
           SCENARIO: "${promptInput}"
           
-          CRITICAL INSTRUCTION - NATURALNESS PRIORITY:
-          - **"Native-Level Polish"**: Fix any awkward or incorrect language. Upgrade it to real-world native expressions.
-          - **Topic fidelity**: Stay very close to the specific nuances of the scenario.
-          - **Realism**: Include hesitation markers (e.g., "uh", "well"), slang, or idioms where appropriate.
+          CRITICAL INSTRUCTION - MAX DIVERSITY & NATIVE REALISM:
+          - **Dynamic Persona**: Randomly assign distinct, contrasting, or even extreme personalities/moods to Speakers A and B (e.g., sarcastic vs. naive, aggressive vs. defensive, overly excited vs. deadpan). Let their personality dictate the vocabulary and tone.
+          - **Native-Level Polish**: Use raw, real-world native expressions. Avoid textbook grammar if a native speaker would use a slang, idiom, or filler word (uh, like, you know, etc.).
+          - **Topic Fidelity & Twist**: Stay on topic but don't be afraid to add a small realistic twist or conflict to make it more engaging.
           
           GENDER ASSIGNMENT:
-          - Assign logical genders to Speakers A and B based on the scenario.
+          - Assign logical genders to Speakers A and B based on the scenario/personas.
        `;
     }
 
