@@ -1,11 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { EdgeTTS } from '@/utils/edge-tts';
+import { z } from 'zod';
 
 // --- CONSTANTS ---
-// ~100ms of Silence (MPEG 1 Layer III, 44.1kHz, 64kbps) - valid MP3 frame
 const SILENCE_FRAME_BASE64 = "//NExAAAAANIAAAAAExBTUUzLjEwMKqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq";
 const SILENCE_FRAME_BUFFER = Buffer.from(SILENCE_FRAME_BASE64, 'base64');
-const SILENCE_DURATION_SEC = 0.1; // Approx duration of one frame above
+const SILENCE_DURATION_SEC = 0.1;
+const TTS_BATCH_SIZE = 5;
+const MAX_SEGMENTS = 50;
 
 // File Logger
 function log(message: string) {
@@ -14,54 +16,72 @@ function log(message: string) {
 
 
 
-async function generateSegment(
-    segment: any,
-    language: string,
-    accentMode: string,
-    speakers: any
-): Promise<Buffer> {
-    const spk = segment.speaker;
-    const gender = speakers[spk]?.gender || 'female';
+interface AudioSegment {
+    idx: number;
+    text?: string;
+    speaker?: string;
+    speakers?: Record<string, { gender?: 'male' | 'female' }>;
+    pause?: number;
+}
 
-    // Map Voices
-    let voice = 'en-US-AriaNeural'; // Default
-    if (language === 'English') {
-        voice = gender === 'male' ? 'en-US-ChristopherNeural' : 'en-US-AriaNeural';
-    } else if (language === 'Vietnamese') {
-        // North: NamMinh (Male), HoaiMy (Female)
-        if (accentMode === 'south') {
-            // SOUTH MODE:
-            // Female -> HoaiMy (South) - Perfect
-            // Male -> NamMinh (North) - Fallback (No South Male available)
-            voice = gender === 'male' ? 'vi-VN-NamMinhNeural' : 'vi-VN-HoaiMyNeural';
-        } else {
-            // NORTH MODE:
-            // Male -> NamMinh (North) - Perfect
-            // Female -> HoaiMy (South) - Fallback (No North Female available? Check logic)
-            // Actually currently HoaiMy is the only female. 
-            voice = gender === 'male' ? 'vi-VN-NamMinhNeural' : 'vi-VN-HoaiMyNeural';
-        }
-    }
+type SpeakersMap = Record<string, { gender?: 'male' | 'female' }>;
+
+// Voice mapping table: [language][gender] -> voice name
+const VOICE_MAP: Record<string, Record<string, string>> = {
+    English: {
+        male: 'en-US-ChristopherNeural',
+        female: 'en-US-AriaNeural',
+    },
+    Vietnamese: {
+        male: 'vi-VN-NamMinhNeural',
+        female: 'vi-VN-HoaiMyNeural',
+    },
+};
+
+const LANG_CODE_MAP: Record<string, string> = {
+    Vietnamese: 'vi-VN',
+    English: 'en-US',
+};
+
+const GOOGLE_LANG_MAP: Record<string, string> = {
+    Vietnamese: 'vi',
+    English: 'en',
+};
+
+function resolveVoice(language: string, gender: string): string {
+    return VOICE_MAP[language]?.[gender] || VOICE_MAP.English.female;
+}
+
+async function generateSegment(
+    segment: AudioSegment,
+    language: string,
+    _accentMode: string,
+    speakers: SpeakersMap
+): Promise<Buffer> {
+    const spk = segment.speaker || 'A';
+    const gender = speakers[spk]?.gender || 'female';
+    const voice = resolveVoice(language, gender);
+    const langCode = LANG_CODE_MAP[language] || 'en-US';
 
     try {
-        console.log(`[TTS] Trying EdgeTTS for: ${segment.text.substring(0, 10)}...`);
+        console.log(`[TTS] Trying EdgeTTS for: ${segment.text!.substring(0, 10)}...`);
         const tts = new EdgeTTS({
             voice,
-            lang: language === 'Vietnamese' ? 'vi-VN' : 'en-US',
+            lang: langCode,
             outputFormat: 'audio-24khz-96kbitrate-mono-mp3'
         });
-        const result = await tts.call(segment.text);
+        const result = await tts.call(segment.text!);
         return result.data;
-    } catch (e: any) {
-        console.error(`EdgeTTS failed for ${voice}, trying Google Fallback. Error: ${e.message}`);
+    } catch (e: unknown) {
+        const edgeErr = e instanceof Error ? e : new Error(String(e));
+        console.error(`EdgeTTS failed for ${voice}, trying Google Fallback. Error: ${edgeErr.message}`);
 
         // Fallback to Google Translate TTS (Free)
         try {
-            console.log(`[TTS] Trying GoogleFallback for: ${segment.text.substring(0, 10)}...`);
-            // Import dynamically or assume it's available since verified
+            console.log(`[TTS] Trying GoogleFallback for: ${segment.text!.substring(0, 10)}...`);
             const googleTTS = require('google-tts-api');
-            const url = googleTTS.getAudioUrl(segment.text, {
-                lang: language === 'Vietnamese' ? 'vi' : 'en',
+            const url = googleTTS.getAudioUrl(segment.text!, {
+                lang: GOOGLE_LANG_MAP[language] || 'en',
                 slow: false,
                 host: 'https://translate.google.com',
             });
@@ -72,9 +92,10 @@ async function generateSegment(
             const arrayBuffer = await res.arrayBuffer();
             return Buffer.from(arrayBuffer);
 
-        } catch (fallbackError: any) {
-            console.error("Google Fallback also failed", fallbackError.message);
-            throw e; // Throw original error or fallback error? Throwing E is better to know root cause.
+        } catch (fallbackError: unknown) {
+            const fbErr = fallbackError instanceof Error ? fallbackError.message : String(fallbackError);
+            console.error("Google Fallback also failed", fbErr);
+            throw edgeErr;
         }
     }
 }
@@ -90,20 +111,40 @@ async function processInBatches<T, R>(items: T[], batchSize: number, fn: (item: 
     return results;
 }
 
+const AudioRequestSchema = z.object({
+    segments: z.array(z.object({
+        idx: z.number(),
+        text: z.string().optional(),
+        speaker: z.string().optional(),
+        speakers: z.record(z.string(), z.any()).optional(),
+        pause: z.number().optional(),
+    })).min(1).max(MAX_SEGMENTS),
+    speakers: z.record(z.string(), z.object({
+        gender: z.enum(['male', 'female']).optional(),
+    })).optional().default({}),
+    language: z.enum(['Vietnamese', 'English']).default('Vietnamese'),
+    accentMode: z.string().default('north'),
+});
+
 export async function POST(req: NextRequest) {
     try {
-        const body = await req.json();
-        const { segments, speakers, language, accentMode = 'north' } = body;
-        log(`Req: Lang=${language}, Segs=${segments?.length}`);
+        const rawBody = await req.json();
+        const parsed = AudioRequestSchema.safeParse(rawBody);
 
-        if (!segments || !Array.isArray(segments)) {
-            return NextResponse.json({ error: 'Invalid segments' }, { status: 400 });
+        if (!parsed.success) {
+            return NextResponse.json({
+                error: 'Invalid request',
+                details: parsed.error.issues.map(i => `${i.path.join('.')}: ${i.message}`).join(', ')
+            }, { status: 400 });
         }
+
+        const { segments, speakers, language, accentMode } = parsed.data;
+        log(`Req: Lang=${language}, Segs=${segments?.length}`);
 
 
 
         // Processing Function
-        const processItem = async (segment: any, index: number) => {
+        const processItem = async (segment: AudioSegment, index: number) => {
             // Case 1: Silence
             if (segment.pause) {
                 const pauseSec = segment.pause / 1000;
@@ -132,7 +173,7 @@ export async function POST(req: NextRequest) {
         };
 
         // Run in batches of 5 (Process all requested segments)
-        const results = await processInBatches(segments, 5, processItem);
+        const results = await processInBatches(segments, TTS_BATCH_SIZE, processItem);
 
         // Return individual segments for client-side mapping
         const responseSegments = results.map((r, i) => ({
@@ -145,8 +186,9 @@ export async function POST(req: NextRequest) {
             segments: responseSegments
         });
 
-    } catch (error: any) {
+    } catch (error: unknown) {
         console.error('API Error:', error);
-        return NextResponse.json({ error: 'Generation failed', details: error.message }, { status: 500 });
+        const errMsg = error instanceof Error ? error.message : String(error);
+        return NextResponse.json({ error: 'Generation failed', details: errMsg }, { status: 500 });
     }
 }

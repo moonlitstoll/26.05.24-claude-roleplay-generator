@@ -5,6 +5,8 @@ import { v4 as uuidv4 } from 'uuid';
 const CHROMIUM_FULL_VERSION = '130.0.2849.68';
 const TRUSTED_CLIENT_TOKEN = '6A5AA1D4EAFF4E9FB37E23D68491D6F4';
 const WINDOWS_FILE_TIME_EPOCH = 11644473600n;
+const WS_CONNECT_TIMEOUT_MS = 10000;
+const DEFAULT_TTS_TIMEOUT_MS = 20000;
 
 function generateSecMsGecToken() {
     const ticks = BigInt(Math.floor((Date.now() / 1000) + Number(WINDOWS_FILE_TIME_EPOCH))) * 10000000n;
@@ -42,7 +44,7 @@ export class EdgeTTS {
         rate = 'default',
         pitch = 'default',
         volume = 'default',
-        timeout = 20000
+        timeout = DEFAULT_TTS_TIMEOUT_MS
     }: Configure = {}) {
         this.voice = voice;
         this.lang = lang;
@@ -68,7 +70,7 @@ export class EdgeTTS {
             const timer = setTimeout(() => {
                 ws.close();
                 reject(new Error('WebSocket connection timeout'));
-            }, 10000);
+            }, WS_CONNECT_TIMEOUT_MS);
 
             ws.on('open', () => {
                 clearTimeout(timer);
@@ -101,39 +103,40 @@ export class EdgeTTS {
         const ws = await this._connectWebSocket();
         const requestId = uuidv4().replace(/-/g, '');
 
-        return new Promise((resolve, reject) => {
-            const dataChunks: Buffer[] = [];
+        const timeout = setTimeout(() => {
+            try { ws.close(); } catch (_) { /* ignore */ }
+        }, this.timeout);
 
-            const timeout = setTimeout(() => {
-                ws.close();
-                reject(new Error('TTS Generation timeout'));
-            }, this.timeout);
+        try {
+            return await new Promise<{ data: Buffer }>((resolve, reject) => {
+                const dataChunks: Buffer[] = [];
 
-            ws.on('message', (data: Buffer, isBinary: boolean) => {
-                if (isBinary) {
-                    const separator = 'Path:audio\r\n';
-                    const index = data.indexOf(separator);
-                    if (index >= 0) {
-                        const audioData = data.subarray(index + separator.length);
-                        dataChunks.push(audioData);
+                ws.on('message', (data: Buffer, isBinary: boolean) => {
+                    if (isBinary) {
+                        const separator = 'Path:audio\r\n';
+                        const index = data.indexOf(separator);
+                        if (index >= 0) {
+                            const audioData = data.subarray(index + separator.length);
+                            dataChunks.push(audioData);
+                        }
+                    } else {
+                        const str = data.toString();
+                        if (str.includes('Path:turn.end')) {
+                            resolve({ data: Buffer.concat(dataChunks) });
+                        }
                     }
-                } else {
-                    const str = data.toString();
-                    if (str.includes('Path:turn.end')) {
-                        clearTimeout(timeout);
-                        ws.close();
-                        resolve({ data: Buffer.concat(dataChunks) });
-                    }
-                }
-            });
+                });
 
-            ws.on('error', (err) => {
-                clearTimeout(timeout);
-                ws.close();
-                reject(err);
-            });
+                ws.on('error', (err) => {
+                    reject(err);
+                });
 
-            const ssml = `X-RequestId:${requestId}\r\nContent-Type:application/ssml+xml\r\nPath:ssml\r\n\r\n
+                ws.on('close', () => {
+                    // If closed before turn.end, reject with timeout
+                    reject(new Error('TTS Generation timeout'));
+                });
+
+                const ssml = `X-RequestId:${requestId}\r\nContent-Type:application/ssml+xml\r\nPath:ssml\r\n\r\n
       <speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" xmlns:mstts="https://www.w3.org/2001/mstts" xml:lang="${this.lang}">
         <voice name="${this.voice}">
           <prosody rate="${this.rate}" pitch="${this.pitch}" volume="${this.volume}">
@@ -142,7 +145,11 @@ export class EdgeTTS {
         </voice>
       </speak>`;
 
-            ws.send(ssml);
-        });
+                ws.send(ssml);
+            });
+        } finally {
+            clearTimeout(timeout);
+            try { ws.close(); } catch (_) { /* ignore */ }
+        }
     }
 }
