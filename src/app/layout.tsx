@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { IBM_Plex_Sans } from "next/font/google";
 import "./globals.css";
 
@@ -12,7 +12,17 @@ export const metadata: Metadata = {
   description: "Generate native-level roleplay conversations with AI",
   icons: {
     icon: "/favicon.ico",
+    apple: "/icon-192.png",
   },
+  appleWebApp: {
+    capable: true,
+    title: "RealTalk",
+    statusBarStyle: "default",
+  },
+};
+
+export const viewport: Viewport = {
+  themeColor: "#ffffff",
 };
 
 export default function RootLayout({
