@@ -1,7 +1,7 @@
 'use client';
 
 import React from 'react';
-import { Languages, BookOpen } from 'lucide-react';
+import { Languages, BookOpen, RefreshCw } from 'lucide-react';
 import { GeneratedSet, ScriptItem, WordAnalysisObj } from '../types';
 
 interface ScriptViewerProps {
@@ -10,6 +10,9 @@ interface ScriptViewerProps {
   showAnalysis: boolean;
   scrollRefs: React.MutableRefObject<{ [key: string]: HTMLDivElement | null }>;
   onPlaySentence: (index: number) => void;
+  /** Shown on lines still waiting for analysis (e.g. why a retry is in progress). */
+  analysisNote?: string;
+  onRetryAnalysis?: () => void;
 }
 
 function WordAnalysisArray({ items }: { items: WordAnalysisObj[] }) {
@@ -67,13 +70,15 @@ function WordAnalysisString({ text }: { text: string }) {
 }
 
 const ScriptLine = React.memo(function ScriptLine({
-  line, isActive, scrollRefs, onPlaySentence, showAnalysis
+  line, isActive, scrollRefs, onPlaySentence, showAnalysis, pendingNote, onRetryAnalysis
 }: {
   line: ScriptItem;
   isActive: boolean;
   scrollRefs: React.MutableRefObject<{ [key: string]: HTMLDivElement | null }>;
   onPlaySentence: (index: number) => void;
   showAnalysis: boolean;
+  pendingNote?: string;
+  onRetryAnalysis?: () => void;
 }) {
   const segmentKey = `${line.segmentIndex ?? 0}`;
 
@@ -129,6 +134,28 @@ const ScriptLine = React.memo(function ScriptLine({
                 <p className="text-[#1a1a1a] font-semibold leading-[1.7]">{line.translation}</p>
               </div>
 
+              {!line.word_analysis && line.analysisStatus === 'pending' && (
+                <div className="flex items-center gap-2 text-emerald-700 pl-1 py-1">
+                  <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                  <span className="text-xs font-semibold">{pendingNote || '풀이 작성 중…'}</span>
+                </div>
+              )}
+
+              {!line.word_analysis && line.analysisStatus === 'failed' && (
+                <div className="flex items-center justify-between gap-2 pl-1 py-1">
+                  <span className="text-xs font-semibold text-gray-500">풀이를 받지 못했습니다.</span>
+                  {onRetryAnalysis && (
+                    <button
+                      onClick={(e) => { e.stopPropagation(); onRetryAnalysis(); }}
+                      className="flex items-center gap-1 px-3 py-1.5 rounded-lg border border-gray-300 bg-white text-xs font-bold text-black hover:bg-gray-50 active:scale-95"
+                    >
+                      <RefreshCw className="w-3 h-3" />
+                      다시 받기
+                    </button>
+                  )}
+                </div>
+              )}
+
               {line.word_analysis && (
                 <div className="space-y-2">
                   <div className="flex items-center gap-2 text-emerald-700 pl-1">
@@ -152,7 +179,7 @@ const ScriptLine = React.memo(function ScriptLine({
   );
 });
 
-export default React.memo(function ScriptViewer({ generatedSets, currentSentenceIndex, showAnalysis, scrollRefs, onPlaySentence }: ScriptViewerProps) {
+export default React.memo(function ScriptViewer({ generatedSets, currentSentenceIndex, showAnalysis, scrollRefs, onPlaySentence, analysisNote, onRetryAnalysis }: ScriptViewerProps) {
   return (
     <div className="glass p-1 md:p-6 rounded-none md:rounded-3xl min-h-screen flex flex-col bg-white shadow-sm border-0 md:border border-gray-300 mb-24 md:mb-20">
       <div className="space-y-2 md:space-y-4">
@@ -177,6 +204,8 @@ export default React.memo(function ScriptViewer({ generatedSets, currentSentence
                 scrollRefs={scrollRefs}
                 onPlaySentence={onPlaySentence}
                 showAnalysis={showAnalysis}
+                pendingNote={line.analysisStatus === 'pending' ? analysisNote : undefined}
+                onRetryAnalysis={line.analysisStatus === 'failed' ? onRetryAnalysis : undefined}
               />
             ))}
           </div>

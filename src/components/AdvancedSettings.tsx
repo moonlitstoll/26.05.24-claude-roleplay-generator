@@ -1,6 +1,7 @@
 'use client';
 
 import React from 'react';
+import { MODELS } from '../constants/models';
 
 interface AdvancedSettingsProps {
   apiKey: string;
@@ -31,9 +32,9 @@ export default function AdvancedSettings({ apiKey, modelType, onApiKeyChange, on
           onChange={(e) => onModelChange(e.target.value)}
           className="w-full bg-gray-50 border border-gray-200 rounded-lg p-2.5 outline-none font-bold text-black"
         >
-          <option value="gemini-2.0-flash">Gemini 2 Flash</option>
-          <option value="gemini-2.5-flash">Gemini 2.5 Flash</option>
-          <option value="gemini-2.5-flash-lite">Gemini 2.5 Flash Lite</option>
+          {MODELS.map(m => (
+            <option key={m.id} value={m.id}>{m.label}</option>
+          ))}
         </select>
       </div>
     </div>

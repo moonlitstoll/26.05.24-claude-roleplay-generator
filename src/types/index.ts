@@ -4,6 +4,8 @@ export interface ScriptItem {
   translation: string;
   word_analysis?: string | WordAnalysisObj[];
   segmentIndex?: number;
+  // Word analysis arrives after the script. Unset = nothing outstanding (done, or an older saved session).
+  analysisStatus?: 'pending' | 'failed';
 }
 
 export interface WordAnalysisObj {

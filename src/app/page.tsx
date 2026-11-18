@@ -4,7 +4,9 @@ import React, { useState, useEffect, useRef } from 'react';
 import { X } from 'lucide-react';
 import { mergeAudioToWav } from '../utils/audioMerge';
 import { saveSession, getSessions, deleteSession, clearSessions, SavedSession } from '../utils/storage';
-import { ScriptItem, GeneratedSet, AudioMap, TimelineSegment } from '../types';
+import { ScriptItem, GeneratedSet, AudioMap, TimelineSegment, WordAnalysisObj } from '../types';
+import { DEFAULT_MODEL, resolveModel } from '../constants/models';
+import { postJsonWithRetry, ApiError, FAIL_REASON_LABEL, RetryInfo } from '../utils/apiRetry';
 import { usePlaybackReducer } from '../hooks/usePlaybackReducer';
 import { useKeyboardShortcuts } from '../hooks/useKeyboardShortcuts';
 import { useMediaSession } from '../hooks/useMediaSession';
@@ -18,10 +20,20 @@ import InputModal from '../components/InputModal';
 import TurnsPopup from '../components/TurnsPopup';
 import EmptyState from '../components/EmptyState';
 
+// Word analysis is requested in small batches sent side by side (measured 2026-11-18:
+// 3 lines per batch answers in about 7s; one big request took 20-55s).
+const ANALYSIS_CONCURRENCY = 4;
+const analysisBatchSize = (lineCount: number) => (lineCount <= 12 ? 3 : 4);
+
+interface AnalysisResponse {
+  items: { index: number; word_analysis: WordAnalysisObj[] }[];
+  missing: number[];
+}
+
 export default function Home() {
   // --- Configuration State ---
   const [language, setLanguage] = useState<'Vietnamese' | 'English'>('Vietnamese');
-  const [modelType, setModelType] = useState('gemini-2.5-flash');
+  const [modelType, setModelType] = useState<string>(DEFAULT_MODEL);
   const [input, setInput] = useState('');
   const [apiKey, setApiKey] = useState('');
   const [turnCount, setTurnCount] = useState(3);
@@ -34,6 +46,7 @@ export default function Home() {
   const [audioLoading, setAudioLoading] = useState(false);
   const [progress, setProgress] = useState('');
   const [error, setError] = useState<string | null>(null);
+  const [analysisNote, setAnalysisNote] = useState('');
 
   // --- Data State ---
   const [generatedSets, setGeneratedSets] = useState<GeneratedSet[]>([]);
@@ -75,6 +88,10 @@ export default function Home() {
   const repeatModeRef = useRef(repeatMode);
   const languageRef = useRef(language);
   const isGeneratingRef = useRef(false);
+  // Id of the set currently on screen; late analysis answers for an older set are dropped.
+  const activeSetIdRef = useRef<string | null>(null);
+  // History saves run one after another so an older snapshot cannot overwrite a newer one.
+  const saveChainRef = useRef<Promise<void>>(Promise.resolve());
 
   useEffect(() => {
     generatedSetsRef.current = generatedSets;
@@ -447,8 +464,13 @@ export default function Home() {
   useEffect(() => {
     const storedKey = localStorage.getItem('gemini_api_key');
     if (storedKey) setApiKey(storedKey);
+    // A stored model that is no longer offered (e.g. the retired gemini-2.0-flash) falls back to the default.
     const storedModel = localStorage.getItem('gemini_model_type');
-    if (storedModel) setModelType(storedModel);
+    if (storedModel) {
+      const valid = resolveModel(storedModel);
+      setModelType(valid);
+      if (valid !== storedModel) localStorage.setItem('gemini_model_type', valid);
+    }
     loadHistory();
   }, []);
 
@@ -504,6 +526,106 @@ export default function Home() {
     }
   };
 
+  // --- Word Analysis (stage 2) ---
+  const patchScriptLines = (setId: string, patch: (line: ScriptItem) => ScriptItem) => {
+    setGeneratedSets(prev => prev.map(set =>
+      set.id === setId ? { ...set, script: set.script.map(patch) } : set
+    ));
+  };
+
+  /**
+   * Fetches word analysis for `targets` (segment indices) of one set, a few lines per request,
+   * several requests at a time. Each batch is written into the script as soon as it arrives.
+   * Lines the model skipped are asked for once more; whatever is still missing is marked failed.
+   */
+  const runAnalysis = async (setId: string, script: ScriptItem[], targets: number[], lang: string) => {
+    if (targets.length === 0) return;
+    const isStale = () => activeSetIdRef.current !== setId;
+    const lines = script.map((l, i) => ({
+      index: l.segmentIndex ?? i,
+      speaker: l.speaker,
+      text: l.text,
+      translation: l.translation,
+    }));
+
+    const requestBatch = async (batch: number[]): Promise<number[]> => {
+      try {
+        const data = await postJsonWithRetry<AnalysisResponse>(
+          '/api/generate-analysis',
+          { language: lang, apiKey, model: modelType, lines, targets: batch },
+          {
+            isCancelled: isStale,
+            onRetry: (info: RetryInfo) => {
+              if (!isStale()) setAnalysisNote(`풀이 다시 요청 중 (${FAIL_REASON_LABEL[info.reason]})…`);
+            },
+          }
+        );
+        if (isStale()) return [];
+        const byIndex = new Map((data.items || []).map(item => [item.index, item.word_analysis]));
+        patchScriptLines(setId, line => {
+          const analysis = line.segmentIndex != null ? byIndex.get(line.segmentIndex) : undefined;
+          return analysis ? { ...line, word_analysis: analysis, analysisStatus: undefined } : line;
+        });
+        return batch.filter(idx => !byIndex.has(idx));
+      } catch (e) {
+        console.error('[Analysis] batch failed:', batch, e);
+        // Errors that a retry cannot fix (bad key, bad request) are worth showing right away.
+        if (!isStale() && e instanceof ApiError && !e.retryable) setError(e.message);
+        return batch;
+      }
+    };
+
+    const runRound = async (indices: number[]): Promise<number[]> => {
+      const size = analysisBatchSize(script.length);
+      const queue: number[][] = [];
+      for (let i = 0; i < indices.length; i += size) queue.push(indices.slice(i, i + size));
+      const missing: number[] = [];
+      const worker = async () => {
+        while (queue.length > 0 && !isStale()) {
+          const batch = queue.shift()!;
+          missing.push(...await requestBatch(batch));
+        }
+      };
+      await Promise.all(Array.from({ length: Math.min(ANALYSIS_CONCURRENCY, queue.length) }, worker));
+      return missing;
+    };
+
+    let missing = await runRound(targets);
+    if (missing.length > 0 && !isStale()) {
+      setAnalysisNote('빠진 문장 풀이 다시 요청 중…');
+      missing = await runRound(missing);
+    }
+    if (isStale()) return;
+
+    setAnalysisNote('');
+    if (missing.length > 0) {
+      const failed = new Set(missing);
+      patchScriptLines(setId, line =>
+        line.segmentIndex != null && failed.has(line.segmentIndex) && !line.word_analysis
+          ? { ...line, analysisStatus: 'failed' }
+          : line
+      );
+    }
+  };
+
+  const retryFailedAnalysis = () => {
+    const set = generatedSetsRef.current.find(s => s.script.some(l => l.analysisStatus === 'failed'));
+    if (!set) return;
+    const targets = set.script
+      .filter(l => l.analysisStatus === 'failed' && l.segmentIndex != null)
+      .map(l => l.segmentIndex as number);
+    activeSetIdRef.current = set.id;
+    setError(null);
+    patchScriptLines(set.id, l => (l.analysisStatus === 'failed' ? { ...l, analysisStatus: 'pending' } : l));
+    runAnalysis(set.id, set.script, targets, languageRef.current);
+  };
+
+  // ScriptViewer is memoized and this page re-renders several times a second during playback,
+  // so the retry handler is handed down with a stable identity.
+  const retryFailedAnalysisRef = useRef(retryFailedAnalysis);
+  useEffect(() => { retryFailedAnalysisRef.current = retryFailedAnalysis; });
+  const handleRetryAnalysis = React.useCallback(() => retryFailedAnalysisRef.current(), []);
+
   const handleGenerate = async () => {
     if (typeof document !== 'undefined' && document.activeElement instanceof HTMLElement) {
       document.activeElement.blur();
@@ -515,6 +637,8 @@ export default function Home() {
     setGeneratedSets([]);
     dispatch({ type: 'SET_CURRENT_INDEX', payload: -1 });
     setError(null);
+    setAnalysisNote('');
+    activeSetIdRef.current = null;
     isGeneratingRef.current = true;
 
     try {
@@ -524,44 +648,42 @@ export default function Home() {
 
       setProgress('Generating script...');
 
-      const scriptRes = await fetch('/api/generate-script', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
+      // Stage 1: lines + translation only, so the script can be shown and voiced right away.
+      const data = await postJsonWithRetry<{ script: ScriptItem[]; speakers: any }>(
+        '/api/generate-script',
+        {
           input, language,
           count: mode === 'analysis' ? 0 : turnCount,
           mode, apiKey,
           model: modelType,
           accentMode
-        }),
-      });
-
-      if (!scriptRes.ok) {
-        let errData;
-        try { errData = await scriptRes.json(); } catch (e) {
-          throw new Error(`Server Gateway Timeout ${scriptRes.status} (${scriptRes.statusText}). The request may have taken too long.`);
+        },
+        {
+          onRetry: (info: RetryInfo) => setProgress(`Retrying (${FAIL_REASON_LABEL[info.reason]})...`),
         }
-        throw new Error(errData?.details || errData?.error || 'Failed to generate script');
-      }
-
-      const data = await scriptRes.json();
+      );
       const { script, speakers } = data;
 
-      const scriptWithIndices = script.map((item: ScriptItem) => {
+      const scriptWithIndices: ScriptItem[] = script.map((item: ScriptItem) => {
         const idx = globalSegIdx++;
         allSegmentData.push({ idx, text: item.text, speaker: item.speaker, speakers });
-        return { ...item, segmentIndex: idx };
+        return { ...item, segmentIndex: idx, analysisStatus: 'pending' as const };
       });
 
+      const setId = crypto.randomUUID();
       newSets.push({
-        id: crypto.randomUUID(),
+        id: setId,
         script: scriptWithIndices,
         timestamp: new Date(),
         input: input || "Random Topic",
       });
 
+      activeSetIdRef.current = setId;
       setGeneratedSets(newSets);
       dispatch({ type: 'SET_TOTAL_SENTENCES', payload: globalSegIdx });
+
+      // Stage 2: word analysis runs alongside audio generation and fills in as it arrives (not awaited).
+      runAnalysis(setId, scriptWithIndices, scriptWithIndices.map(l => l.segmentIndex as number), language);
 
       setProgress('Generating Audio...');
 
@@ -619,7 +741,8 @@ export default function Home() {
         await saveSession(session);
         loadHistory();
       };
-      autoSave();
+      // Analysis batches update the script several times in a row; save the snapshots in order.
+      saveChainRef.current = saveChainRef.current.then(autoSave).catch(e => console.error('Auto-save failed:', e));
 
       if (isGeneratingRef.current) {
         playSentence(0);
@@ -630,7 +753,15 @@ export default function Home() {
 
   // --- Session Management ---
   const loadSession = (session: SavedSession) => {
-    setGeneratedSets(session.sets);
+    // A session saved while analysis was still arriving: nothing is fetching those lines any more,
+    // so show them as "not received" with the retry button instead of a spinner.
+    const sets = session.sets.map(set => ({
+      ...set,
+      script: set.script.map(l => (l.analysisStatus === 'pending' ? { ...l, analysisStatus: 'failed' as const } : l)),
+    }));
+    activeSetIdRef.current = sets[0]?.id ?? null;
+    setAnalysisNote('');
+    setGeneratedSets(sets);
     setLanguage(session.language as any);
     setInput(session.input || '');
     setVietnameseAccent(session.lastAccent || 'north');
@@ -731,6 +862,8 @@ export default function Home() {
             showAnalysis={showAnalysis}
             scrollRefs={scrollRefs}
             onPlaySentence={playSentence}
+            analysisNote={analysisNote}
+            onRetryAnalysis={handleRetryAnalysis}
           />
         )}
 

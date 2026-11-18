@@ -1,8 +1,15 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { GoogleGenerativeAI } from '@google/generative-ai';
-import { generateContentWithRetry } from '@/utils/gemini';
+import {
+  generateContentWithRetry,
+  parseModelJson,
+  classifyGeminiError,
+  BadModelOutputError,
+  GEMINI_REQUEST_TIMEOUT_MS,
+} from '@/utils/gemini';
+import { resolveModel } from '@/constants/models';
 import { z } from 'zod';
-import { RESPONSE_SCHEMA, getBaseInstruction, buildPrompt } from './prompts';
+import { DIALOGUE_SCHEMA, getBaseInstruction, buildDialoguePrompt } from './prompts';
 
 export const maxDuration = 60;
 
@@ -11,11 +18,21 @@ const RequestSchema = z.object({
   language: z.enum(['Vietnamese', 'English']).default('Vietnamese'),
   count: z.number().int().min(0).max(10).default(3),
   apiKey: z.string().optional().default(''),
-  model: z.string().optional().default('gemini-2.5-flash'),
+  model: z.string().optional().default(''),
   accentMode: z.string().default('all-standard'),
   mode: z.enum(['roleplay', 'analysis']).default('roleplay'),
 });
 
+interface DialogueResult {
+  speakers: Record<string, { gender?: 'male' | 'female' } | null>;
+  script: { speaker: string; text: string; translation: string }[];
+}
+
+/**
+ * Stage 1 of generation: the lines and their Korean translation only.
+ * Word analysis is requested separately (/api/generate-analysis) so the script and audio
+ * can be shown while the much longer analysis is still being written.
+ */
 export async function POST(req: NextRequest) {
   try {
     const rawBody = await req.json();
@@ -28,9 +45,10 @@ export async function POST(req: NextRequest) {
       }, { status: 400 });
     }
 
-    const { input, language, count, apiKey, model: modelName, accentMode, mode } = parsed.data;
+    const { input, language, count, apiKey, model: modelName, mode } = parsed.data;
+    const selectedModel = resolveModel(modelName);
 
-    console.log('[API] Request received:', { input, language, count, modelName });
+    console.log('[API] Script request:', { input, language, count, selectedModel });
 
     // Server env var takes priority; client key is fallback only when no server key exists
     const finalApiKey = process.env.GEMINI_API_KEY || apiKey;
@@ -45,16 +63,14 @@ export async function POST(req: NextRequest) {
     }
 
     const genAI = new GoogleGenerativeAI(finalApiKey);
-    const selectedModel = modelName || 'gemini-2.5-flash';
-
     const model = genAI.getGenerativeModel({
       model: selectedModel,
       generationConfig: {
         responseMimeType: "application/json",
-        responseSchema: RESPONSE_SCHEMA,
+        responseSchema: DIALOGUE_SCHEMA,
         temperature: 1.2,
       },
-    });
+    }, { timeout: GEMINI_REQUEST_TIMEOUT_MS });
 
     const isInputEmpty = !input || input.trim() === '';
     const promptInput = isInputEmpty
@@ -62,32 +78,30 @@ export async function POST(req: NextRequest) {
       : input;
 
     const baseInstruction = getBaseInstruction(mode, count, language, promptInput);
-    const prompt = buildPrompt(promptInput, language, baseInstruction);
+    const prompt = buildDialoguePrompt(promptInput, language, baseInstruction);
 
-    const result = await generateContentWithRetry(model, prompt);
-    let text = result.response.text();
-
-    // Clean up markdown code blocks if present
-    if (text.includes('```')) {
-      text = text.replace(/```json|```/g, '').trim();
-    }
-
-    const data = JSON.parse(text);
+    const data = await generateContentWithRetry(model, prompt, {
+      validate: (result) => {
+        const json = parseModelJson<DialogueResult>(result);
+        if (!Array.isArray(json?.script) || json.script.length === 0) {
+          throw new BadModelOutputError('Model returned an empty script');
+        }
+        return json;
+      },
+    });
 
     return NextResponse.json(data);
   } catch (error: unknown) {
-    console.error('[API] Error generating script:', error);
-    const errMsg = error instanceof Error ? error.message : String(error);
-
-    const isRateLimit = errMsg.includes('429') ||
-      errMsg.includes('Resource exhausted') ||
-      errMsg.includes('Too Many Requests');
+    const failure = classifyGeminiError(error);
+    console.error(`[API] Error generating script (${failure.reason}):`, failure.message);
 
     return NextResponse.json({
-      error: isRateLimit ? 'Rate limit exceeded' : 'Failed to generate script',
-      details: isRateLimit
-        ? 'Gemini 2.0 Flash has lower rate limits. Please try again in 30-60 seconds, or switch to Gemini 2.5 Flash for better stability.'
-        : errMsg
-    }, { status: isRateLimit ? 429 : 500 });
+      error: failure.reason === 'rate_limit' ? 'Rate limit exceeded' : 'Failed to generate script',
+      details: failure.reason === 'rate_limit'
+        ? 'The Gemini API rate limit was hit. Please try again in 30-60 seconds.'
+        : failure.message,
+      reason: failure.reason,
+      retryable: failure.retryable,
+    }, { status: failure.status });
   }
 }
