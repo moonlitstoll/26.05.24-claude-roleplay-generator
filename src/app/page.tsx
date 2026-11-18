@@ -1,24 +1,32 @@
 'use client';
 
 import React, { useState, useEffect, useRef } from 'react';
-import { X } from 'lucide-react';
+import { AlertTriangle, RefreshCw, RotateCcw, X } from 'lucide-react';
 import { mergeAudioToWav } from '../utils/audioMerge';
 import { saveSession, getSessions, deleteSession, clearSessions, SavedSession } from '../utils/storage';
 import { ScriptItem, GeneratedSet, AudioMap, TimelineSegment, WordAnalysisObj } from '../types';
 import { DEFAULT_MODEL, resolveModel } from '../constants/models';
-import { postJsonWithRetry, ApiError, FAIL_REASON_LABEL, RetryInfo } from '../utils/apiRetry';
+import { postJsonWithRetry, ApiError, API_KEY_MESSAGE, FAIL_REASON_LABEL, RetryInfo, userMessage } from '../utils/apiRetry';
+import { readLocal, writeLocal } from '../utils/safeStorage';
+import { isOffline, OFFLINE_MESSAGE, registerOfflineShell, requestPersistentStorage } from '../utils/offline';
+import { ClozeLevel, normalizeClozeLevel } from '../utils/cloze';
+import { sessionTitle } from '../utils/sessionTitle';
 import { usePlaybackReducer } from '../hooks/usePlaybackReducer';
 import { useKeyboardShortcuts } from '../hooks/useKeyboardShortcuts';
 import { useMediaSession } from '../hooks/useMediaSession';
+import { useTheme } from '../hooks/useTheme';
+import { useAppUpdate } from '../hooks/useAppUpdate';
+import { useLearningProgress } from '../hooks/useLearningProgress';
 
 import HeaderBar from '../components/HeaderBar';
 import AdvancedSettings from '../components/AdvancedSettings';
 import ScriptViewer from '../components/ScriptViewer';
 import PlaybackBar from '../components/PlaybackBar';
 import HistorySidebar from '../components/HistorySidebar';
-import InputModal from '../components/InputModal';
-import TurnsPopup from '../components/TurnsPopup';
-import EmptyState from '../components/EmptyState';
+import ComposePanel from '../components/ComposePanel';
+import StudyToolbar from '../components/StudyToolbar';
+import Toast, { ToastState } from '../components/Toast';
+import ConfirmModal from '../components/ConfirmModal';
 
 // Word analysis is requested in small batches sent side by side (measured 2026-11-18:
 // 3 lines per batch answers in about 7s; one big request took 20-55s).
@@ -32,7 +40,10 @@ interface AnalysisResponse {
 
 export default function Home() {
   // --- Configuration State ---
+  // `language` belongs to the script on screen; `draftLanguage` is the choice on the compose screen,
+  // so changing it there cannot disturb the audio of the script still playing.
   const [language, setLanguage] = useState<'Vietnamese' | 'English'>('Vietnamese');
+  const [draftLanguage, setDraftLanguage] = useState<'Vietnamese' | 'English'>('Vietnamese');
   const [modelType, setModelType] = useState<string>(DEFAULT_MODEL);
   const [input, setInput] = useState('');
   const [apiKey, setApiKey] = useState('');
@@ -68,11 +79,36 @@ export default function Home() {
   const [showSpeedPopup, setShowSpeedPopup] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [showAnalysis, setShowAnalysis] = useState(true);
-  const [showTurnsPopup, setShowTurnsPopup] = useState(false);
-  const [showInputModal, setShowInputModal] = useState(false);
-  const [tempInput, setTempInput] = useState('');
+  const [showBreakdown, setShowBreakdown] = useState(false);
+  const [composeOpen, setComposeOpen] = useState(false);
   const [history, setHistory] = useState<SavedSession[]>([]);
   const [showHistory, setShowHistory] = useState(false);
+  const [toast, setToast] = useState<ToastState | null>(null);
+  const [confirmState, setConfirmState] = useState<{ message: string; confirmText?: string; onConfirm: () => void } | null>(null);
+  const { theme, setTheme } = useTheme();
+  const updateAvailable = useAppUpdate();
+
+  // --- Study Mode State ---
+  // The level and round are remembered; the modes themselves always start off.
+  const [toolbarOpen, setToolbarOpen] = useState(false);
+  const [drillMode, setDrillMode] = useState(false);
+  const [mistakeOnly, setMistakeOnly] = useState(false);
+  const [drillLevel, setDrillLevel] = useState<ClozeLevel>(() =>
+    typeof window === 'undefined' ? 'easy' : normalizeClozeLevel(readLocal('roleplay_cloze_level'))
+  );
+  const [drillRound, setDrillRound] = useState(() =>
+    typeof window === 'undefined' ? 0 : Number(readLocal('roleplay_cloze_round')) || 0
+  );
+  const repeatBeforeMistakesRef = useRef<'sentence' | 'session'>('session');
+  const drillBeforeMistakesRef = useRef(false);
+
+  const sessionId = generatedSets[0]?.id;
+  const scriptLineCount = React.useMemo(
+    () => generatedSets.reduce((sum, set) => sum + set.script.length, 0),
+    [generatedSets]
+  );
+  const { mark: markLine, wrongIndices, clearSession: clearProgress, clearAll: clearAllProgress } =
+    useLearningProgress(sessionId, scriptLineCount);
 
   // --- Audio Refs ---
   const audioRefA = useRef<HTMLAudioElement | null>(null);
@@ -110,6 +146,7 @@ export default function Home() {
   // --- Audio Cleanup ---
   const cleanupAudio = React.useCallback(() => {
     dispatch({ type: 'SET_PLAYING', payload: false });
+    activePlayerRef.current = 'A';
 
     // Fully reset each audio element to prevent ghost playback
     [audioRefA, audioRefB, mergedAudioRef].forEach(ref => {
@@ -216,7 +253,7 @@ export default function Home() {
   useEffect(() => {
     const t = setTimeout(() => scrollToActive(), 100);
     return () => clearTimeout(t);
-  }, [currentSentenceIndex, showAnalysis, scrollToActive]);
+  }, [currentSentenceIndex, showAnalysis, scrollToActive, composeOpen, sessionId, mistakeOnly]);
 
   // --- Playback Controls ---
   const togglePlay = React.useCallback(() => {
@@ -249,6 +286,11 @@ export default function Home() {
         mergedAudioRef.current.play().catch(console.error);
       } else {
         const activeAudio = activePlayerRef.current === 'A' ? audioRefA.current : audioRefB.current;
+        // Nothing loaded yet (a saved script just opened, background audio still being prepared).
+        if (activeAudio && !activeAudio.getAttribute('src')) {
+          handlersRef.current.playSentence?.(currentIdx);
+          return;
+        }
         if (activeAudio) {
           activeAudio.playbackRate = playbackSpeed;
           activeAudio.play().catch(e => console.error("Play failed", e));
@@ -340,13 +382,38 @@ export default function Home() {
   }, [getNextStep, playbackSpeed, preloadNextTrack]);
 
   // --- Navigation ---
+  // Moves to a line. If nothing is playing it only moves the position, so review mode never starts audio by itself.
+  const goToLine = React.useCallback((index: number) => {
+    if (isPlaying) {
+      playSentence(index);
+      return;
+    }
+    const segment = isMergedMode ? audioTimeline.find(s => s.index === index) : undefined;
+    const url = getUrlForIndex(index);
+    if (segment && mergedAudioRef.current) {
+      activePlayerRef.current = 'Merged';
+      mergedAudioRef.current.currentTime = segment.start;
+    } else if (url && audioRefA.current) {
+      activePlayerRef.current = 'A';
+      audioRefA.current.src = url;
+      audioRefA.current.currentTime = 0;
+    }
+    currentSentenceIndexRef.current = index;
+    dispatch({ type: 'SET_CURRENT_INDEX', payload: index });
+  }, [isPlaying, playSentence, isMergedMode, audioTimeline, getUrlForIndex]);
+
   const handleNext = React.useCallback(() => {
     const currIdx = currentSentenceIndex;
+    if (mistakeOnly) {
+      if (wrongIndices.length === 0) return;
+      playSentence(wrongIndices.find(w => w > currIdx) ?? wrongIndices[0]);
+      return;
+    }
     let nextIdx = currIdx + 1;
     const total = generatedSetsRef.current.reduce((acc, set) => acc + set.script.length, 0);
     if (nextIdx >= total) nextIdx = 0;
     playSentence(nextIdx);
-  }, [currentSentenceIndex, playSentence]);
+  }, [currentSentenceIndex, playSentence, mistakeOnly, wrongIndices]);
 
   const handlePrev = React.useCallback(() => {
     const activeAudio = activePlayerRef.current === 'A' ? audioRefA.current : audioRefB.current;
@@ -354,18 +421,100 @@ export default function Home() {
       activeAudio.currentTime = 0;
       return;
     }
+    if (mistakeOnly) {
+      if (wrongIndices.length === 0) return;
+      const earlier = wrongIndices.filter(w => w < currentSentenceIndex);
+      playSentence(earlier.length ? earlier[earlier.length - 1] : wrongIndices[wrongIndices.length - 1]);
+      return;
+    }
     const total = generatedSetsRef.current.reduce((acc, set) => acc + set.script.length, 0);
     let prevIdx = currentSentenceIndex - 1;
     if (prevIdx < 0) prevIdx = total - 1;
     playSentence(prevIdx);
-  }, [currentSentenceIndex, playSentence]);
+  }, [currentSentenceIndex, playSentence, mistakeOnly, wrongIndices]);
 
   // --- Handlers Ref (for playSentence access in togglePlay) ---
   const handlersRef = useRef({ playSentence });
   useEffect(() => { handlersRef.current = { playSentence }; }, [playSentence]);
 
+  // --- Study Modes ---
+  // Review keeps one sentence on repeat so playback cannot run on into lines that are hidden.
+  const toggleRepeat = () => {
+    if (mistakeOnly) {
+      setToast({ message: '오답 복습 중에는 한 문장 반복이 켜져 있어요', type: 'success' });
+      return;
+    }
+    dispatch({ type: 'TOGGLE_REPEAT_MODE' });
+  };
+
+  const exitMistakes = React.useCallback(() => {
+    setMistakeOnly(false);
+    setDrillMode(drillBeforeMistakesRef.current);
+    dispatch({ type: 'SET_REPEAT_MODE', payload: repeatBeforeMistakesRef.current });
+  }, [dispatch]);
+
+  const toggleMistakes = () => {
+    if (mistakeOnly) {
+      exitMistakes();
+      return;
+    }
+    if (wrongIndices.length === 0) return;
+    repeatBeforeMistakesRef.current = repeatMode;
+    drillBeforeMistakesRef.current = drillMode;
+    dispatch({ type: 'SET_REPEAT_MODE', payload: 'sentence' });
+    // "알았음" only exists on the blanks, so review always shows them.
+    setDrillMode(true);
+    setMistakeOnly(true);
+    if (!wrongIndices.includes(currentSentenceIndex)) {
+      const nearest = currentSentenceIndex < 0
+        ? wrongIndices[0]
+        : wrongIndices.reduce((best, w) => (Math.abs(w - currentSentenceIndex) < Math.abs(best - currentSentenceIndex) ? w : best), wrongIndices[0]);
+      goToLine(nearest);
+    }
+  };
+
+  const markAnswer = (idx: number, known: boolean) => {
+    markLine(idx, known);
+    if (!known || !mistakeOnly) return;
+    // Worked out from the list without this line: it is about to leave, so it must not be the next stop.
+    const remaining = wrongIndices.filter(w => w !== idx);
+    if (remaining.length > 0) goToLine(remaining.find(w => w > idx) ?? remaining[0]);
+    else if (isPlaying) togglePlay();
+  };
+
+  // ScriptViewer is memoized, so it receives a handler that never changes identity.
+  const markAnswerRef = useRef(markAnswer);
+  useEffect(() => { markAnswerRef.current = markAnswer; });
+  const handleMarkAnswer = React.useCallback((idx: number, known: boolean) => markAnswerRef.current(idx, known), []);
+
+  const pickDrillLevel = (level: ClozeLevel) => {
+    setDrillLevel(level);
+    writeLocal('roleplay_cloze_level', level);
+  };
+
+  const startNewRound = () => {
+    const next = drillRound + 1;
+    setDrillRound(next);
+    writeLocal('roleplay_cloze_round', String(next));
+    clearProgress(sessionId);
+    if (mistakeOnly) exitMistakes();
+  };
+
+  // Hidden: translation and notes off. Folded: translation and word meanings. Open: word notes too.
+  const cycleAnalysis = () => {
+    if (!showAnalysis) {
+      setShowAnalysis(true);
+      setShowBreakdown(false);
+    } else if (!showBreakdown) {
+      setShowBreakdown(true);
+    } else {
+      setShowAnalysis(false);
+      setShowBreakdown(false);
+    }
+  };
+
   // --- Keyboard Shortcuts ---
-  useKeyboardShortcuts({ togglePlay, handlePrev, handleNext, dispatch, setShowAnalysis });
+  useKeyboardShortcuts({ togglePlay, handlePrev, handleNext, toggleRepeat, setShowAnalysis });
 
   // --- Media Session ---
   useMediaSession(
@@ -462,21 +611,24 @@ export default function Home() {
 
   // --- LocalStorage Init ---
   useEffect(() => {
-    const storedKey = localStorage.getItem('gemini_api_key');
+    const storedKey = readLocal('gemini_api_key');
     if (storedKey) setApiKey(storedKey);
     // A stored model that is no longer offered (e.g. the retired gemini-2.0-flash) falls back to the default.
-    const storedModel = localStorage.getItem('gemini_model_type');
+    const storedModel = readLocal('gemini_model_type');
     if (storedModel) {
       const valid = resolveModel(storedModel);
       setModelType(valid);
-      if (valid !== storedModel) localStorage.setItem('gemini_model_type', valid);
+      if (valid !== storedModel) writeLocal('gemini_model_type', valid);
     }
     loadHistory();
+    registerOfflineShell();
+    requestPersistentStorage();
   }, []);
 
-  useEffect(() => {
-    if (apiKey) localStorage.setItem('gemini_api_key', apiKey);
-  }, [apiKey]);
+  const handleApiKeyChange = (key: string) => {
+    setApiKey(key);
+    writeLocal('gemini_api_key', key);
+  };
 
   const loadHistory = async () => {
     const sessions = await getSessions();
@@ -486,7 +638,7 @@ export default function Home() {
   // --- Generation ---
   const generateAudioForSegments = async (segments: any[], audioMode: 'north' | 'south', updateMap: React.Dispatch<React.SetStateAction<AudioMap>>) => {
     if (segments.length === 0) return;
-    setProgress(`Generating Audio (${audioMode})...`);
+    setProgress('음성 만드는 중…');
 
     try {
       const res = await fetch('/api/generate-audio', {
@@ -522,7 +674,7 @@ export default function Home() {
       setProgress('');
     } catch (e) {
       console.error(`Batch Audio Generation Error (${audioMode}):`, e);
-      setError(`Failed to generate audio for ${audioMode} accent.`);
+      setError('음성을 만들지 못했어요. 대본은 그대로 볼 수 있어요.');
     }
   };
 
@@ -570,7 +722,7 @@ export default function Home() {
       } catch (e) {
         console.error('[Analysis] batch failed:', batch, e);
         // Errors that a retry cannot fix (bad key, bad request) are worth showing right away.
-        if (!isStale() && e instanceof ApiError && !e.retryable) setError(e.message);
+        if (!isStale() && e instanceof ApiError && !e.retryable) setError(userMessage(e));
         return batch;
       }
     };
@@ -609,6 +761,10 @@ export default function Home() {
   };
 
   const retryFailedAnalysis = () => {
+    if (isOffline()) {
+      setToast({ message: OFFLINE_MESSAGE, type: 'error' });
+      return;
+    }
     const set = generatedSetsRef.current.find(s => s.script.some(l => l.analysisStatus === 'failed'));
     if (!set) return;
     const targets = set.script
@@ -630,12 +786,23 @@ export default function Home() {
     if (typeof document !== 'undefined' && document.activeElement instanceof HTMLElement) {
       document.activeElement.blur();
     }
+    // Checked before anything is cleared, so the current script survives a tap without internet.
+    if (isOffline()) {
+      setToast({ message: OFFLINE_MESSAGE, type: 'error' });
+      return;
+    }
+    const lang = draftLanguage;
+    setLanguage(lang);
+    languageRef.current = lang;
+    if (mistakeOnly) exitMistakes();
+    setComposeOpen(false);
     setLoading(true);
     setAudioLoading(true);
-    setProgress('Initializing...');
+    setProgress('준비 중…');
     cleanupAudio();
     setGeneratedSets([]);
     dispatch({ type: 'SET_CURRENT_INDEX', payload: -1 });
+    dispatch({ type: 'SET_TOTAL_SENTENCES', payload: 0 });
     setError(null);
     setAnalysisNote('');
     activeSetIdRef.current = null;
@@ -646,20 +813,20 @@ export default function Home() {
       const allSegmentData: any[] = [];
       let globalSegIdx = 0;
 
-      setProgress('Generating script...');
+      setProgress('대본 쓰는 중…');
 
       // Stage 1: lines + translation only, so the script can be shown and voiced right away.
       const data = await postJsonWithRetry<{ script: ScriptItem[]; speakers: any }>(
         '/api/generate-script',
         {
-          input, language,
+          input, language: lang,
           count: mode === 'analysis' ? 0 : turnCount,
           mode, apiKey,
           model: modelType,
           accentMode
         },
         {
-          onRetry: (info: RetryInfo) => setProgress(`Retrying (${FAIL_REASON_LABEL[info.reason]})...`),
+          onRetry: (info: RetryInfo) => setProgress(`다시 시도 중 (${FAIL_REASON_LABEL[info.reason]})…`),
         }
       );
       const { script, speakers } = data;
@@ -683,11 +850,11 @@ export default function Home() {
       dispatch({ type: 'SET_TOTAL_SENTENCES', payload: globalSegIdx });
 
       // Stage 2: word analysis runs alongside audio generation and fills in as it arrives (not awaited).
-      runAnalysis(setId, scriptWithIndices, scriptWithIndices.map(l => l.segmentIndex as number), language);
+      runAnalysis(setId, scriptWithIndices, scriptWithIndices.map(l => l.segmentIndex as number), lang);
 
-      setProgress('Generating Audio...');
+      setProgress('음성 만드는 중…');
 
-      if (language === 'Vietnamese') {
+      if (lang === 'Vietnamese') {
         if (vietnameseAccent === 'south') {
           await generateAudioForSegments(allSegmentData, 'south', setAudioUrlsSouth);
         } else {
@@ -703,7 +870,7 @@ export default function Home() {
       if (globalSegIdx > 0) dispatch({ type: 'SET_CURRENT_INDEX', payload: 0 });
     } catch (error: any) {
       console.error(error);
-      setError(error.message || 'An unexpected error occurred during generation');
+      setError(userMessage(error));
     } finally {
       setLoading(false);
       setAudioLoading(false);
@@ -714,6 +881,7 @@ export default function Home() {
   useEffect(() => {
     const hasAudio = Object.keys(audioUrls).length > 0 || Object.keys(audioUrlsSouth).length > 0;
     if (!loading && !audioLoading && generatedSets.length > 0 && hasAudio) {
+      const savingId = generatedSets[0].id;
       const autoSave = async () => {
         const saveMap = async (map: AudioMap) => {
           const blobMap: { [key: number]: Blob } = {};
@@ -728,9 +896,10 @@ export default function Home() {
         const southMap = await saveMap(audioUrlsSouth);
 
         const session: SavedSession = {
-          id: generatedSets[0].id,
+          id: savingId,
           timestamp: new Date(),
-          input: input || "Random",
+          // From the script itself: the compose box may already hold the next topic.
+          input: generatedSets[0].input || "Random",
           language,
           sets: generatedSets,
           audioBlob: null,
@@ -742,7 +911,13 @@ export default function Home() {
         loadHistory();
       };
       // Analysis batches update the script several times in a row; save the snapshots in order.
-      saveChainRef.current = saveChainRef.current.then(autoSave).catch(e => console.error('Auto-save failed:', e));
+      saveChainRef.current = saveChainRef.current.then(autoSave).catch(e => {
+        console.error('Auto-save failed:', e);
+        // After switching scripts the old audio links are gone on purpose; that is not a failure to report.
+        if (generatedSetsRef.current[0]?.id === savingId) {
+          setToast({ message: '대본을 저장하지 못했어요. 저장 공간을 확인해 주세요.', type: 'error' });
+        }
+      });
 
       if (isGeneratingRef.current) {
         playSentence(0);
@@ -759,11 +934,15 @@ export default function Home() {
       ...set,
       script: set.script.map(l => (l.analysisStatus === 'pending' ? { ...l, analysisStatus: 'failed' as const } : l)),
     }));
+    if (mistakeOnly) exitMistakes();
     activeSetIdRef.current = sets[0]?.id ?? null;
     setAnalysisNote('');
+    setError(null);
+    setComposeOpen(false);
     setGeneratedSets(sets);
     setLanguage(session.language as any);
-    setInput(session.input || '');
+    setDraftLanguage(session.language as any);
+    setInput(session.input === 'Random' || session.input === 'Random Topic' ? '' : session.input || '');
     setVietnameseAccent(session.lastAccent || 'north');
     cleanupAudio();
 
@@ -782,92 +961,143 @@ export default function Home() {
       dispatch({ type: 'SET_TOTAL_SENTENCES', payload: totalCount });
       dispatch({ type: 'SET_CURRENT_INDEX', payload: 0 });
     } else {
-      alert("Audio regeneration required for old history items.");
+      dispatch({ type: 'SET_TOTAL_SENTENCES', payload: 0 });
+      dispatch({ type: 'SET_CURRENT_INDEX', payload: -1 });
+      setToast({ message: '이 대본에는 저장된 음성이 없어요', type: 'error' });
     }
     setShowHistory(false);
   };
 
-  const deleteHistoryItem = async (e: React.MouseEvent, id: string) => {
+  const deleteHistoryItem = (e: React.MouseEvent, id: string) => {
     e.stopPropagation();
-    if (confirm('Delete this history item?')) {
-      await deleteSession(id);
-      loadHistory();
-    }
+    setConfirmState({
+      message: '이 대본을 삭제할까요?',
+      onConfirm: async () => {
+        await deleteSession(id);
+        clearProgress(id);
+        loadHistory();
+      },
+    });
   };
 
-  const clearHistoryAll = async () => {
-    if (confirm('Are you sure you want to delete ALL history? This cannot be undone.')) {
-      await clearSessions();
-      setHistory([]);
-    }
+  const clearHistoryAll = () => {
+    setConfirmState({
+      message: '저장된 대본을 모두 삭제할까요? 되돌릴 수 없어요.',
+      confirmText: '전체 삭제',
+      onConfirm: async () => {
+        await clearSessions();
+        clearAllProgress();
+        setHistory([]);
+      },
+    });
   };
 
   const handleModelChange = (model: string) => {
     setModelType(model);
-    localStorage.setItem('gemini_model_type', model);
+    writeLocal('gemini_model_type', model);
   };
 
-  return (
-    <main className="min-h-screen px-0 py-2 md:p-2 flex flex-col gap-4 relative overflow-x-hidden bg-gray-50">
-      <div className="absolute top-0 -left-20 w-96 h-96 bg-blue-200/40 rounded-full blur-[100px] pointer-events-none" />
-      <div className="absolute bottom-0 -right-20 w-96 h-96 bg-purple-200/40 rounded-full blur-[100px] pointer-events-none" />
+  const hasScript = generatedSets.length > 0;
+  const showCompose = composeOpen || (!hasScript && !loading);
+  const headerTitle = loading
+    ? progress || '만드는 중…'
+    : hasScript ? sessionTitle(generatedSets[0].input) : 'RealTalk';
 
+  return (
+    <main className="flex flex-col h-dvh bg-[#F8FAFC] dark:bg-slate-900 text-slate-800 dark:text-slate-200 overflow-hidden font-sans relative">
       <HeaderBar
-        input={input}
-        mode={mode}
-        language={language}
-        loading={loading}
-        progress={progress}
-        turnCount={turnCount}
+        title={headerTitle}
+        busy={loading}
         isMerging={isMerging}
-        isMergedMode={isMergedMode}
-        mergedAudioUrl={mergedAudioUrl}
-        showAdvanced={showAdvanced}
-        showTurnsPopup={showTurnsPopup}
-        onInputClick={() => { setTempInput(input); setShowInputModal(true); }}
-        onGenerate={handleGenerate}
-        onModeChange={setMode}
-        onLanguageChange={setLanguage}
+        backgroundReady={isMergedMode && !!mergedAudioUrl}
+        toolbarAvailable={hasScript && !showCompose}
+        toolbarOpen={toolbarOpen}
+        toolbarModesOn={drillMode || mistakeOnly}
+        onHome={() => setComposeOpen(true)}
         onShowHistory={() => setShowHistory(true)}
-        onToggleAdvanced={() => setShowAdvanced(!showAdvanced)}
-        onToggleTurnsPopup={() => setShowTurnsPopup(!showTurnsPopup)}
+        onOpenSettings={() => setShowAdvanced(true)}
+        onToggleToolbar={() => setToolbarOpen(open => !open)}
       />
 
-      {showAdvanced && (
-        <AdvancedSettings
-          apiKey={apiKey}
-          modelType={modelType}
-          onApiKeyChange={setApiKey}
-          onModelChange={handleModelChange}
-        />
-      )}
-
-      {error && (
-        <div className="w-full px-4 md:px-6 animate-in slide-in-from-top-2">
-          <div className="bg-red-50 border border-red-200 text-red-600 px-4 py-3 rounded-xl flex items-center justify-between shadow-sm">
-            <div className="flex items-center gap-2 text-sm font-semibold">
-              <span className="bg-red-100 p-1 rounded-full"><X className="w-3 h-3" /></span>
-              {error}
-            </div>
-            <button onClick={() => setError(null)} className="text-red-400 hover:text-red-700 text-xs font-bold uppercase">Dismiss</button>
-          </div>
+      {updateAvailable && (
+        <div className="flex-none flex items-center gap-2 px-3 py-1.5 bg-indigo-600 text-white text-xs sm:text-sm">
+          <RotateCcw size={14} className="shrink-0" />
+          <span className="flex-1 min-w-0 font-medium leading-tight">새 버전이 나왔어요. 새로고침하면 최신 기능이 적용됩니다.</span>
+          <button onClick={() => window.location.reload()} className="shrink-0 px-2.5 py-1 rounded-lg bg-white text-indigo-700 font-bold hover:bg-indigo-50 transition-colors">
+            새로고침
+          </button>
         </div>
       )}
 
-      <div className="flex-1 space-y-6 z-10 min-w-0">
-        {generatedSets.length > 0 && (
+      {error && (
+        <div role="alert" className="flex-none flex items-center gap-2 px-3 py-1.5 bg-red-50 dark:bg-red-950/40 border-b border-red-200 dark:border-red-900 text-red-700 dark:text-red-300 text-xs sm:text-sm">
+          <AlertTriangle size={14} className="shrink-0" />
+          <span className="flex-1 min-w-0 font-medium leading-tight">{error}</span>
+          {error === API_KEY_MESSAGE && (
+            <button onClick={() => setShowAdvanced(true)} className="shrink-0 px-2.5 py-1 rounded-lg bg-red-600 hover:bg-red-700 text-white font-bold transition-colors">
+              설정 열기
+            </button>
+          )}
+          <button onClick={() => setError(null)} aria-label="오류 알림 닫기" className="shrink-0 p-1 rounded-lg hover:bg-red-100 dark:hover:bg-red-900/50 transition-colors">
+            <X size={14} />
+          </button>
+        </div>
+      )}
+
+      {toolbarOpen && hasScript && !showCompose && (
+        <StudyToolbar
+          drillMode={drillMode}
+          drillLevel={drillLevel}
+          wrongCount={wrongIndices.length}
+          mistakeOnly={mistakeOnly}
+          onToggleDrill={() => setDrillMode(on => !on)}
+          onPickLevel={pickDrillLevel}
+          onNewRound={startNewRound}
+          onToggleMistakes={toggleMistakes}
+        />
+      )}
+
+      <div key={showCompose ? 'compose' : 'script'} className="flex-1 min-h-0 overflow-y-auto">
+        {showCompose ? (
+          <ComposePanel
+            input={input}
+            mode={mode}
+            language={draftLanguage}
+            turnCount={turnCount}
+            loading={loading}
+            hasScript={hasScript}
+            onInputChange={setInput}
+            onModeChange={setMode}
+            onLanguageChange={setDraftLanguage}
+            onTurnCountChange={setTurnCount}
+            onGenerate={handleGenerate}
+            onShowHistory={() => setShowHistory(true)}
+            onBackToScript={() => setComposeOpen(false)}
+          />
+        ) : hasScript ? (
           <ScriptViewer
             generatedSets={generatedSets}
             currentSentenceIndex={currentSentenceIndex}
             showAnalysis={showAnalysis}
+            showBreakdown={showBreakdown}
             scrollRefs={scrollRefs}
             onPlaySentence={playSentence}
             analysisNote={analysisNote}
             onRetryAnalysis={handleRetryAnalysis}
+            drillMode={drillMode}
+            drillLevel={drillLevel}
+            drillRound={drillRound}
+            wrongIndices={wrongIndices}
+            mistakeOnly={mistakeOnly}
+            onMarkAnswer={handleMarkAnswer}
+            onExitMistakes={exitMistakes}
           />
+        ) : (
+          <div className="h-full flex flex-col items-center justify-center gap-3 text-slate-500 dark:text-slate-400">
+            <RefreshCw size={24} className="animate-spin text-indigo-600 dark:text-indigo-400" />
+            <p className="text-sm font-bold">{progress || '만드는 중…'}</p>
+          </div>
         )}
-
-        {generatedSets.length === 0 && !loading && <EmptyState />}
       </div>
 
       {/* Dual Audio Engine */}
@@ -890,20 +1120,34 @@ export default function Home() {
           playbackSpeed={playbackSpeed}
           repeatMode={repeatMode}
           showAnalysis={showAnalysis}
+          showBreakdown={showBreakdown}
           showSpeedPopup={showSpeedPopup}
           onTogglePlay={togglePlay}
           onPrev={handlePrev}
           onNext={handleNext}
-          onSpeedChange={(speed) => dispatch({ type: 'SET_SPEED', payload: speed })}
-          onRepeatModeToggle={() => dispatch({ type: 'TOGGLE_REPEAT_MODE' })}
-          onToggleAnalysis={() => setShowAnalysis(!showAnalysis)}
+          onSpeedChange={(speed) => { dispatch({ type: 'SET_SPEED', payload: speed }); setShowSpeedPopup(false); }}
+          onRepeatModeToggle={toggleRepeat}
+          onCycleAnalysis={cycleAnalysis}
           onToggleSpeedPopup={() => setShowSpeedPopup(!showSpeedPopup)}
+        />
+      )}
+
+      {showAdvanced && (
+        <AdvancedSettings
+          apiKey={apiKey}
+          modelType={modelType}
+          theme={theme}
+          onApiKeyChange={handleApiKeyChange}
+          onModelChange={handleModelChange}
+          onThemeChange={setTheme}
+          onClose={() => setShowAdvanced(false)}
         />
       )}
 
       {showHistory && (
         <HistorySidebar
           history={history}
+          activeId={sessionId}
           onLoadSession={loadSession}
           onDeleteItem={deleteHistoryItem}
           onClearAll={clearHistoryAll}
@@ -911,23 +1155,16 @@ export default function Home() {
         />
       )}
 
-      {showTurnsPopup && (
-        <TurnsPopup
-          turnCount={turnCount}
-          onSelect={(num) => { setTurnCount(num); setShowTurnsPopup(false); }}
-          onClose={() => setShowTurnsPopup(false)}
+      {confirmState && (
+        <ConfirmModal
+          message={confirmState.message}
+          confirmText={confirmState.confirmText}
+          onConfirm={() => { confirmState.onConfirm(); setConfirmState(null); }}
+          onCancel={() => setConfirmState(null)}
         />
       )}
 
-      {showInputModal && (
-        <InputModal
-          mode={mode}
-          tempInput={tempInput}
-          onTempInputChange={setTempInput}
-          onConfirm={() => { setInput(tempInput); setShowInputModal(false); }}
-          onClose={() => setShowInputModal(false)}
-        />
-      )}
+      {toast && <Toast {...toast} onClose={() => setToast(null)} />}
     </main>
   );
 }

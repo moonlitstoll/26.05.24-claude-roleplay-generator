@@ -33,13 +33,10 @@ const getDB = async (): Promise<IDBPDatabase> => {
     return dbInstance;
 };
 
+// Throws on failure so the caller can tell the user the script was not saved.
 export const saveSession = async (session: SavedSession) => {
-    try {
-        const db = await getDB();
-        await db.put(STORE_NAME, session);
-    } catch (e) {
-        console.error('[Storage] Failed to save session:', e);
-    }
+    const db = await getDB();
+    await db.put(STORE_NAME, session);
 };
 
 export const getSessions = async (): Promise<SavedSession[]> => {

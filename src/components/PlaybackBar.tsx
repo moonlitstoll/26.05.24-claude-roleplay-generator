@@ -1,7 +1,7 @@
 'use client';
 
 import React from 'react';
-import { Play, RefreshCw, ChevronRight, MessageSquare } from 'lucide-react';
+import { BookOpen, Eye, EyeOff, Pause, Play, Repeat, Repeat1, SkipBack, SkipForward } from 'lucide-react';
 
 interface PlaybackBarProps {
   isPlaying: boolean;
@@ -10,110 +10,115 @@ interface PlaybackBarProps {
   playbackSpeed: number;
   repeatMode: 'sentence' | 'session';
   showAnalysis: boolean;
+  showBreakdown: boolean;
   showSpeedPopup: boolean;
   onTogglePlay: () => void;
   onPrev: () => void;
   onNext: () => void;
   onSpeedChange: (speed: number) => void;
   onRepeatModeToggle: () => void;
-  onToggleAnalysis: () => void;
+  onCycleAnalysis: () => void;
   onToggleSpeedPopup: () => void;
 }
 
+// Sizes use min(vw, px) so all controls stay on one line on narrow phones and when zoomed.
+const SMALL_BTN = 'flex items-center justify-center shrink-0 min-w-[min(9vw,44px)] min-h-[min(11vw,44px)]';
+const ICON_SM = 'w-[min(4.4vw,18px)] h-[min(4.4vw,18px)]';
+const ICON_MD = 'w-[min(5vw,20px)] h-[min(5vw,20px)]';
+const ICON_LG = 'w-[min(5vw,20px)] h-[min(5vw,20px)]';
+
+const SPEEDS = Array.from({ length: 16 }, (_, i) => (0.5 + i * 0.1).toFixed(1));
+
 export default React.memo(function PlaybackBar({
-  isPlaying, currentTime, duration, playbackSpeed, repeatMode,
-  showAnalysis, showSpeedPopup,
-  onTogglePlay, onPrev, onNext, onSpeedChange,
-  onRepeatModeToggle, onToggleAnalysis, onToggleSpeedPopup
+  isPlaying, currentTime, duration, playbackSpeed, repeatMode, showAnalysis, showBreakdown, showSpeedPopup,
+  onTogglePlay, onPrev, onNext, onSpeedChange, onRepeatModeToggle, onCycleAnalysis, onToggleSpeedPopup,
 }: PlaybackBarProps) {
+  const sentenceRepeat = repeatMode === 'sentence';
+
   return (
-    <div role="toolbar" aria-label="Playback controls" className="fixed bottom-0 left-0 right-0 bg-white/80 backdrop-blur-md border-t border-gray-200 z-50 p-4 shadow-[0_-10px_20px_rgba(0,0,0,0.05)] animate-in slide-in-from-bottom duration-500">
-      <div className="max-w-4xl mx-auto">
-        {/* Progress Bar */}
-        <div className="absolute top-0 left-0 right-0 h-1 bg-gray-100">
-          <div
-            className="h-full bg-blue-500 transition-all duration-100"
-            style={{ width: `${duration > 0 ? (currentTime / duration) * 100 : 0}%` }}
-          />
-        </div>
+    // No backdrop blur here: it would trap the speed popup's full-screen tap-to-close layer inside this bar.
+    <div role="toolbar" aria-label="재생 조작" className="relative flex-none bg-white/95 dark:bg-slate-900/95 border-t border-slate-200 dark:border-slate-700 z-50 shadow-lg">
+      <div className="absolute inset-x-0 -top-px h-1 bg-slate-100 dark:bg-slate-700 overflow-hidden">
+        <div className="h-full bg-indigo-500" style={{ width: `${duration > 0 ? (currentTime / duration) * 100 : 0}%` }} />
+      </div>
 
-        <div className="flex items-center justify-between gap-2 md:gap-4 mt-2">
-          <div className="flex items-center gap-2">
-            <div className="relative">
-              <button
-                onClick={onToggleSpeedPopup}
-                className="flex items-center gap-1 px-2 md:px-3 py-1.5 md:py-2 bg-gray-50 rounded-full text-[10px] md:text-sm font-bold text-gray-700 hover:bg-gray-100 w-16 md:w-20 justify-center"
-              >
-                <RefreshCw className="w-3 md:w-4 h-3 md:h-4 text-blue-500" />
-                {playbackSpeed.toFixed(1)}x
-              </button>
-              {showSpeedPopup && (
-                <div className="absolute bottom-16 left-0 bg-white border border-gray-200 p-4 w-[280px] shadow-2xl rounded-2xl flex flex-col gap-3 animate-in fade-in zoom-in-95 duration-200 origin-bottom-left">
-                  <div className="flex justify-between items-center mb-1">
-                    <span className="text-xs font-bold text-gray-500 uppercase">Speed Control</span>
-                    <span className="text-sm font-black text-blue-600">{playbackSpeed.toFixed(1)}x</span>
-                  </div>
-
-                  <div className="grid grid-cols-4 gap-2">
-                    {Array.from({ length: 16 }, (_, i) => (0.5 + i * 0.1).toFixed(1)).map((speedStr) => {
-                      const speed = parseFloat(speedStr);
-                      const isSelected = Math.abs(playbackSpeed - speed) < 0.01;
-                      return (
-                        <button
-                          key={speedStr}
-                          onClick={() => onSpeedChange(speed)}
-                          className={`py-2 rounded-lg text-xs font-bold transition-all ${isSelected
-                            ? 'bg-blue-600 text-white shadow-md scale-105'
-                            : 'bg-gray-50 text-gray-600 hover:bg-gray-100 hover:text-blue-600'
-                            }`}
-                        >
-                          {speedStr}
-                        </button>
-                      );
-                    })}
-                  </div>
+      <div className="max-w-5xl mx-auto h-14 flex items-center justify-between px-2 gap-[min(1vw,4px)]">
+        <div className="flex items-center gap-[min(1vw,4px)]">
+          <div className="relative">
+            <button
+              onClick={onToggleSpeedPopup}
+              aria-label={`재생 속도 ${playbackSpeed.toFixed(1)}배`}
+              aria-expanded={showSpeedPopup}
+              className={`${SMALL_BTN} px-[min(1.5vw,6px)] rounded-lg font-bold transition-all border text-[min(2.9vw,11px)] ${showSpeedPopup
+                ? 'bg-indigo-600 text-white border-indigo-600'
+                : 'bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-300 border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-700'}`}
+            >
+              {playbackSpeed.toFixed(1)}x
+            </button>
+            {showSpeedPopup && (
+              <>
+                <div className="fixed inset-0 z-[60]" onClick={onToggleSpeedPopup} />
+                <div role="dialog" aria-label="재생 속도" className="absolute bottom-full left-0 mb-2 z-[61] w-[232px] grid grid-cols-4 gap-1 p-2 rounded-xl bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 shadow-lg">
+                  {SPEEDS.map(speedStr => {
+                    const speed = parseFloat(speedStr);
+                    const selected = Math.abs(playbackSpeed - speed) < 0.01;
+                    return (
+                      <button
+                        key={speedStr}
+                        onClick={() => onSpeedChange(speed)}
+                        aria-pressed={selected}
+                        className={`h-10 rounded-lg text-[13px] font-bold transition-colors ${selected
+                          ? 'bg-indigo-600 text-white'
+                          : 'text-slate-500 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-700'}`}
+                      >
+                        {speedStr}
+                      </button>
+                    );
+                  })}
                 </div>
-              )}
-            </div>
-
-            <button
-              onClick={onToggleAnalysis}
-              className={`flex items-center justify-center p-2 md:p-2 rounded-full transition-all ${showAnalysis ? 'bg-blue-100 text-blue-600' : 'bg-gray-50 text-gray-400 hover:bg-gray-100'}`}
-              title="Toggle Analysis"
-            >
-              <div className="relative">
-                <MessageSquare className="w-4 h-4 md:w-5 md:h-5" />
-                <span className="absolute -bottom-1 -right-1 text-[8px] font-black">{showAnalysis ? 'ON' : 'OFF'}</span>
-              </div>
-            </button>
+              </>
+            )}
           </div>
 
-          <div className="flex items-center gap-3 md:gap-6">
-            <button onClick={onPrev} aria-label="Previous sentence" className="p-2 md:p-3 text-gray-400 hover:bg-gray-100 rounded-full">
-              <ChevronRight className="w-6 md:w-8 h-6 md:h-8 rotate-180" />
-            </button>
-            <button onClick={onTogglePlay} aria-label={isPlaying ? 'Pause' : 'Play'} className="w-10 md:w-14 h-10 md:h-14 bg-blue-600 text-white rounded-xl md:rounded-2xl flex items-center justify-center shadow-lg active:scale-95 transition-all">
-              {isPlaying
-                ? <div className="flex gap-1"><div className="w-1 md:w-1.5 h-4 md:h-6 bg-white animate-pulse" /><div className="w-1 md:w-1.5 h-4 md:h-6 bg-white animate-pulse delay-75" /></div>
-                : <Play className="w-5 md:w-8 h-5 md:h-8 ml-0.5 md:l-1 fill-current" />
-              }
-            </button>
-            <button onClick={onNext} aria-label="Next sentence" className="p-2 md:p-3 text-gray-400 hover:bg-gray-100 rounded-full">
-              <ChevronRight className="w-6 md:w-8 h-6 md:h-8" />
-            </button>
-          </div>
-
-          <div className="flex items-center gap-2 md:gap-3">
-            <button
-              onClick={onRepeatModeToggle}
-              aria-label={`Repeat mode: ${repeatMode === 'sentence' ? 'single' : 'all'}`}
-              className="flex flex-col items-center gap-0.5 p-1.5 md:p-2 rounded-lg md:rounded-xl border bg-blue-50 border-blue-200 text-blue-600"
-            >
-              <RefreshCw className={`w-4 md:w-6 h-4 md:h-6 stroke-[2.5] ${repeatMode === 'session' ? 'animate-spin-slow' : ''}`} />
-              <span className="text-[6px] md:text-[8px] font-black uppercase">{repeatMode === 'sentence' ? '1-L' : 'ALL'}</span>
-            </button>
-          </div>
+          <button
+            onClick={onCycleAnalysis}
+            aria-label={!showAnalysis ? '번역과 풀이 보기' : showBreakdown ? '번역과 풀이 숨기기' : '단어 풀이 펼치기'}
+            className={`${SMALL_BTN} rounded-lg border transition-all ${!showAnalysis
+              ? 'bg-white dark:bg-slate-800 text-slate-400 dark:text-slate-500 border-slate-200 dark:border-slate-700'
+              : showBreakdown
+                ? 'bg-emerald-50 dark:bg-emerald-950/40 text-emerald-600 dark:text-emerald-400 border-emerald-200 dark:border-emerald-800'
+                : 'bg-indigo-50 dark:bg-indigo-950/40 text-indigo-600 dark:text-indigo-400 border-indigo-100 dark:border-indigo-900'}`}
+          >
+            {!showAnalysis ? <EyeOff className={ICON_SM} /> : showBreakdown ? <BookOpen className={ICON_SM} /> : <Eye className={ICON_SM} />}
+          </button>
         </div>
+
+        <div className="flex items-center gap-[min(1.2vw,6px)]">
+          <button onClick={onPrev} aria-label="이전 문장" className={`${SMALL_BTN} text-slate-400 dark:text-slate-500 hover:text-indigo-600 dark:hover:text-indigo-400 transition-colors`}>
+            <SkipBack className={`${ICON_MD} fill-current`} />
+          </button>
+          <button
+            onClick={onTogglePlay}
+            aria-label={isPlaying ? '일시정지' : '재생'}
+            className="w-[min(10vw,44px)] h-[min(10vw,44px)] shrink-0 bg-indigo-600 hover:bg-indigo-700 text-white rounded-full flex items-center justify-center shadow-lg shadow-indigo-200 dark:shadow-black/40 transition-transform active:scale-95"
+          >
+            {isPlaying ? <Pause className={ICON_LG} fill="currentColor" /> : <Play className={`${ICON_LG} ml-0.5`} fill="currentColor" />}
+          </button>
+          <button onClick={onNext} aria-label="다음 문장" className={`${SMALL_BTN} text-slate-400 dark:text-slate-500 hover:text-indigo-600 dark:hover:text-indigo-400 transition-colors`}>
+            <SkipForward className={`${ICON_MD} fill-current`} />
+          </button>
+        </div>
+
+        <button
+          onClick={onRepeatModeToggle}
+          aria-label={sentenceRepeat ? '한 문장 반복 끄기' : '한 문장 반복 켜기'}
+          aria-pressed={sentenceRepeat}
+          className={`${SMALL_BTN} rounded-lg border transition-all ${sentenceRepeat
+            ? 'bg-amber-50 dark:bg-amber-950/40 text-amber-600 dark:text-amber-400 border-amber-200 dark:border-amber-800 shadow-sm'
+            : 'bg-white dark:bg-slate-800 text-slate-400 dark:text-slate-500 border-slate-200 dark:border-slate-700'}`}
+        >
+          {sentenceRepeat ? <Repeat1 className={ICON_SM} /> : <Repeat className={ICON_SM} />}
+        </button>
       </div>
     </div>
   );

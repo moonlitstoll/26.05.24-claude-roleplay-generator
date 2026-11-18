@@ -1,13 +1,12 @@
 'use client';
 
 import { useEffect, useRef } from 'react';
-import { PlaybackAction } from './usePlaybackReducer';
 
 interface KeyboardHandlers {
   togglePlay: () => void;
   handlePrev: () => void;
   handleNext: () => void;
-  dispatch: React.Dispatch<PlaybackAction>;
+  toggleRepeat: () => void;
   setShowAnalysis: React.Dispatch<React.SetStateAction<boolean>>;
 }
 
@@ -22,8 +21,11 @@ export function useKeyboardShortcuts(handlers: KeyboardHandlers) {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.isComposing) return;
       const target = e.target as HTMLElement;
-      const isInput = target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable || target.closest('[contenteditable="true"]');
+      const isInput = target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.tagName === 'SELECT' || target.isContentEditable || target.closest('[contenteditable="true"]');
       if (isInput) return;
+      // A control reached with Tab keeps its own Space/Enter. After a mouse tap it does not match
+      // :focus-visible, so Space still means play/pause there.
+      if (target.closest('button, a, [role="button"]') && target.matches(':focus-visible')) return;
 
       const key = e.key;
       const code = e.code;
@@ -39,7 +41,7 @@ export function useKeyboardShortcuts(handlers: KeyboardHandlers) {
         handlersRef.current.handleNext();
       } else if (key === 'Enter' || code === 'Enter') {
         e.preventDefault();
-        handlersRef.current.dispatch({ type: 'TOGGLE_REPEAT_MODE' });
+        handlersRef.current.toggleRepeat();
       } else if (key.toLowerCase() === 'b' || code === 'KeyB') {
         e.preventDefault();
         handlersRef.current.setShowAnalysis((prev: boolean) => !prev);

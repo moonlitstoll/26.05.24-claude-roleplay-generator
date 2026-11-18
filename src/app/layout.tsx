@@ -1,11 +1,5 @@
 import type { Metadata, Viewport } from "next";
-import { IBM_Plex_Sans } from "next/font/google";
 import "./globals.css";
-
-const ibmPlexSans = IBM_Plex_Sans({
-  subsets: ["latin", "vietnamese"],
-  weight: ["400", "500", "600", "700"]
-});
 
 export const metadata: Metadata = {
   title: "RealTalk Roleplay Generator",
@@ -22,8 +16,20 @@ export const metadata: Metadata = {
 };
 
 export const viewport: Viewport = {
-  themeColor: "#ffffff",
+  themeColor: "#f8fafc",
 };
+
+// Runs before the first paint so dark-mode users never see a white flash.
+// Same rule as resolveTheme in utils/theme.ts; change both together.
+const THEME_BOOT = `(function () {
+  try {
+    var p = localStorage.getItem('roleplay_theme');
+    var dark = p === 'dark' || (p !== 'light' && !!(window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches));
+    var el = document.documentElement;
+    if (dark) el.classList.add('dark');
+    el.style.colorScheme = dark ? 'dark' : 'light';
+  } catch (e) {}
+})();`;
 
 export default function RootLayout({
   children,
@@ -31,8 +37,12 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en">
-      <body className={ibmPlexSans.className}>{children}</body>
+    // suppressHydrationWarning: the boot script changes <html> before React attaches.
+    <html lang="ko" suppressHydrationWarning>
+      <head>
+        <script dangerouslySetInnerHTML={{ __html: THEME_BOOT }} />
+      </head>
+      <body>{children}</body>
     </html>
   );
 }

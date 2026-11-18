@@ -1,58 +1,59 @@
 @import "tailwindcss";
 
-:root {
-  --background: #f8fafc;
-  --foreground: #0f172a;
+/* Dark mode follows <html class="dark">, not the device directly, so the Light/Dark settings
+   can override the device. See utils/theme.ts and the boot script in app/layout.tsx. */
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* Device fonts only: the app looks the same offline, and Vietnamese tone marks never fall back
+   to a different font in the middle of a word. */
+@theme {
+  --font-sans: 'Pretendard', 'Noto Sans KR', 'Apple SD Gothic Neo', system-ui, sans-serif;
 }
 
-html {
-  scroll-snap-type: y mandatory;
-  scroll-behavior: auto;
-  overflow-y: auto;
-}
-
-body {
-  color: #1a1a1a;
-  background: var(--background);
-  font-feature-settings: "cv02", "cv03", "cv04", "cv11";
-  line-height: 1.7;
-}
-
-@layer utilities {
-  .glass {
-    @apply bg-white border border-slate-200 shadow-xl shadow-slate-200/50;
+@layer base {
+  html {
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    /* Korean stays whole at line ends; long Latin words still cannot overflow */
+    word-break: keep-all;
+    overflow-wrap: anywhere;
   }
 
-  .glass-dark {
-    @apply bg-white border border-slate-200 shadow-lg;
+  body {
+    @apply bg-slate-50 text-slate-900 dark:bg-slate-900 dark:text-slate-100;
   }
 
-  .text-gradient {
-    @apply bg-clip-text text-transparent bg-gradient-to-r from-blue-600 via-indigo-600 to-violet-600;
+  button:not(:disabled),
+  [role='button'] {
+    cursor: pointer;
+  }
+
+  :focus-visible {
+    @apply outline-2 outline-offset-2 outline-indigo-500;
   }
 }
 
-/* Custom Scrollbar */
+@media (prefers-reduced-motion: reduce) {
+  .animate-pulse,
+  .animate-bounce {
+    animation: none;
+  }
+}
+
 ::-webkit-scrollbar {
-  width: 10px;
+  width: 8px;
+  height: 8px;
 }
 
 ::-webkit-scrollbar-track {
-  background: #f1f5f9;
+  background: transparent;
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #94a3b8;
-  border-radius: 5px;
-  border: 2px solid #f1f5f9;
+  @apply bg-slate-300 dark:bg-slate-600 rounded-full;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: #64748b;
-}
-
-@layer utilities {
-  .no-scrollbar::-webkit-scrollbar {
-    display: none;
-  }
+  @apply bg-slate-400 dark:bg-slate-500;
 }

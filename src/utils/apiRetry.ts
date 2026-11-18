@@ -34,6 +34,25 @@ export const FAIL_REASON_LABEL: Record<FailReason, string> = {
   other: '오류',
 };
 
+export const API_KEY_MESSAGE = 'API 키가 없거나 맞지 않아요. 설정에서 넣어 주세요.';
+
+const FAIL_REASON_MESSAGE: Record<FailReason, string> = {
+  rate_limit: '요청 한도를 넘었어요. 잠시 뒤 다시 해 주세요.',
+  overloaded: 'AI 서버가 붐벼요. 잠시 뒤 다시 해 주세요.',
+  timeout: '응답이 너무 늦어요. 다시 해 주세요.',
+  network: '연결이 끊겼어요. 인터넷을 확인해 주세요.',
+  bad_output: 'AI 답을 읽지 못했어요. 다시 해 주세요.',
+  bad_request: '요청을 처리하지 못했어요. 입력 내용을 확인해 주세요.',
+  other: '문제가 생겼어요. 다시 해 주세요.',
+};
+
+/** The sentence shown to the user for a failed request. Raw server text stays in the console. */
+export function userMessage(e: unknown): string {
+  const raw = e instanceof Error ? e.message : String(e);
+  if (/api.?key/i.test(raw)) return API_KEY_MESSAGE;
+  return FAIL_REASON_MESSAGE[e instanceof ApiError ? e.reason : 'other'];
+}
+
 export interface RetryInfo {
   reason: FailReason;
   /** 1 for the first retry. */
