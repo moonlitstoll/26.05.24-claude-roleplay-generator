@@ -30,6 +30,14 @@ interface ScriptViewerProps {
 // Keeps the visible pill small while giving a finger a 40px target, without making the card taller.
 const HIT_AREA = "relative before:content-[''] before:absolute before:-inset-x-1 before:-inset-y-3";
 
+// A speaker keeps one colour whether or not the line is playing; the card stripe shows the active line.
+const speakerBadge = (speaker: string) => {
+  const id = speaker.trim().toUpperCase();
+  if (id === 'A') return 'bg-blue-600 text-white border-blue-700 dark:border-blue-400';
+  if (id === 'B') return 'bg-rose-600 text-white border-rose-700 dark:border-rose-400';
+  return 'bg-slate-600 text-white border-slate-700 dark:border-slate-400';
+};
+
 const onKeyActivate = (fn: () => void) => (e: React.KeyboardEvent) => {
   if (e.key === 'Enter' || e.key === ' ') {
     e.preventDefault();
@@ -99,9 +107,7 @@ const ScriptLine = React.memo(function ScriptLine({
           <Play size={9} fill="currentColor" /> {idx + 1}
         </button>
         {line.speaker && (
-          <span className={`px-1.5 py-0 leading-4 rounded-lg text-[9px] font-black uppercase tracking-tighter border ${isActive
-            ? 'bg-purple-600 text-white border-purple-700 dark:border-purple-400 shadow-sm'
-            : 'bg-slate-800 dark:bg-slate-200 text-slate-200 dark:text-slate-800 border-slate-900 dark:border-slate-300 opacity-80'}`}>
+          <span className={`px-1.5 py-0 leading-4 rounded-lg text-[9px] font-black uppercase tracking-tighter border ${speakerBadge(line.speaker)}`}>
             {line.speaker}
           </span>
         )}
